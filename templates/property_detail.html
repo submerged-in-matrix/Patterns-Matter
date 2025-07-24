@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ pretty_title }} - {{ tab.title() }} | Patterns Matter</title>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .upload-block {
+            margin-top: 2em;
+            background: #363636;
+            border-radius: 10px;
+            padding: 1.5em;
+        }
+        .upload-block h3 {
+            color: #f08903;
+            margin-top: 0;
+        }
+        .msg {
+            color: #e67e22;
+            font-weight: bold;
+            margin-bottom: 1em;
+        }
+        .data-table {
+            margin-top: 2em;
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .data-table th, .data-table td {
+            border: 1px solid #444;
+            padding: 0.7em 1em;
+            text-align: left;
+        }
+        .data-table th {
+            background: #282;
+            color: #fff;
+        }
+        .data-table td a {
+            color: #22aadd;
+            text-decoration: underline;
+        }
+        .data-table td a:hover {
+            color: #1177cc;
+        }
+        .return-home {
+            display: inline-block;
+            margin-top: 2em;
+            background: #2a6;
+            color: #fff;
+            border-radius: 6px;
+            padding: 0.6em 1.7em;
+            text-decoration: none;
+            font-weight: bold;
+        }
+        .return-home:hover { background: #225c44; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Login/Logout button -->
+        <div class="admin-link" style="text-align: right; margin-bottom: 1em;">
+            {% if admin %}
+                <a href="{{ url_for('logout') }}">Logout</a>
+            {% else %}
+                <a href="{{ url_for('login') }}">Admin Login</a>
+            {% endif %}
+        </div>
+
+        <h1>{{ pretty_title }}: {{ tab.title() }}</h1>
+        
+        <!-- Tab Navigation -->
+        <div style="margin-bottom: 1.5em;">
+            <a href="{{ url_for('property_detail', property_name=property_name, tab='dataset') }}"
+               style="padding: 0.6em 1.5em; border-radius: 6px; text-decoration: none; font-weight: bold;
+                      background: {% if tab == 'dataset' %}#2a6{% else %}#363636{% endif %}; color: #fff; margin-right: 1em;">
+                Dataset
+            </a>
+            <a href="{{ url_for('property_detail', property_name=property_name, tab='results') }}"
+               style="padding: 0.6em 1.5em; border-radius: 6px; text-decoration: none; font-weight: bold;
+                      background: {% if tab == 'results' %}#2a6{% else %}#363636{% endif %}; color: #fff;">
+                Results
+            </a>
+        </div>
+
+        <!-- Admin upload form -->
+        {% if admin %}
+        <div class="upload-block">
+            <h3>Upload a {{ pretty_title }} {{ tab.title() }} {% if tab == 'dataset' %}(CSV or NPY){% else %}(JPG, PNG, GIF, PDF, DOCX){% endif %}</h3>
+            {% if upload_message %}
+                <div class="msg">{{ upload_message }}</div>
+            {% endif %}
+            <form method="post" enctype="multipart/form-data">
+                <input type="file" name="file" required>
+                <input type="submit" value="Upload">
+            </form>
+        </div>
+        {% endif %}
+
+        {% if edit_message %}
+            <div class="msg">{{ edit_message }}</div>
+        {% endif %}
+
+        <!-- Uploaded files table -->
+        <table class="data-table">
+            <tr>
+                <th>Filename</th>
+                {% if tab == 'dataset' %}<th>Source</th>{% endif %}
+                <th>Description</th>
+                <th>Uploaded At</th>
+                <th>Operation</th>
+            </tr>
+            {% for fname, source, description, uploaded_at in uploads %}
+            <tr>
+                <td>{{ fname }}</td>
+                {% if tab == 'dataset' %}
+                    <td>
+                        {% if admin %}
+                        <form method="post" style="display:inline;">
+                            <input type="hidden" name="row_filename" value="{{ fname }}">
+                            <input type="text" name="row_source" value="{{ source or '' }}" size="18">
+                        {% else %}
+                            {{ source or '' }}
+                        {% endif %}
+                    </td>
+                {% endif %}
+                <td>
+                    {% if admin %}
+                        {% if tab == 'dataset' %}
+                            <input type="text" name="row_description" value="{{ description or '' }}" size="22">
+                            <button type="submit" name="edit_row" value="1" style="margin-left:6px;">Save</button>
+                        </form>
+                        {% else %}
+                        <form method="post" style="display:inline;">
+                            <input type="hidden" name="row_filename" value="{{ fname }}">
+                            <input type="text" name="row_description" value="{{ description or '' }}" size="22">
+                            <button type="submit" name="edit_row" value="1" style="margin-left:6px;">Save</button>
+                        </form>
+                        {% endif %}
+                    {% else %}
+                        {{ description or '' }}
+                    {% endif %}
+                </td>
+                <td>{{ uploaded_at.split('T')[0] if uploaded_at else '' }}</td>
+                <td>
+                    {% if fname.endswith('.csv') or fname.endswith('.npy') %}
+                        <a href="{{ url_for('view_table', filename=property_name + '/' + tab + '/' + fname) }}" target="_blank">View</a>
+                    {% endif %}
+                    <a href="{{ url_for('uploaded_file', filename=property_name + '/' + tab + '/' + fname) }}" download>Download</a>
+                    {% if admin %}
+                        <form action="{{ url_for('delete_dataset_file', property_name=property_name, tab=tab, filename=fname) }}" method="post" style="display:inline;" onsubmit="return confirm('Delete this file?');"></form>
+                            <button type="submit" style="background:#d33;color:#fff;border:none;padding:0.2em 0.9em;border-radius:5px;margin-left:1em;">Delete</button>
+                        </form>
+                    {% endif %}
+
+                </td>
+            </tr>
+            {% endfor %}
+            {% if uploads|length == 0 %}
+            <tr>
+                <td colspan="{% if tab == 'dataset' %}5{% else %}4{% endif %}">
+                    No files uploaded yet for this {{ tab }}.
+                </td>
+            </tr>
+            {% endif %}
+        </table>
+
+        <a class="return-home" href="{{ url_for('public_home') }}">Return to Home</a>
+        <a class="return-home" href="{{ url_for('materials_portal') }}" style="margin-left: 1.5em;">Back to Materials Database</a>
+    </div>
+</body>
+</html>

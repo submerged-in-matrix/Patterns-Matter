@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Dashboard | Patterns Matter</title>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .return-home {
+            display: inline-block;
+            background: #2a6;
+            color: #fff;
+            border-radius: 6px;
+            padding: 0.6em 1.7em;
+            text-decoration: none;
+            font-weight: bold;
+            margin-bottom: 1em;
+        }
+        .return-home:hover { background: #225c44; }
+        table.upload-table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-bottom: 2em;
+        }
+        table.upload-table th, table.upload-table td {
+            border: 1px solid #444;
+            padding: 0.7em 1.1em;
+            text-align: left;
+        }
+        table.upload-table th {
+            background: #282;
+            color: #fff;
+        }
+        table.upload-table td a {
+            color: #22aadd;
+            text-decoration: underline;
+        }
+        table.upload-table td a:hover {
+            color: #1177cc;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Top row: Return Home (left) and Logout/Login (right) -->
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <a class="return-home" href="{{ url_for('public_home') }}">Return to Home</a>
+            <div class="admin-link" style="text-align: right;">
+                {% if session.admin %}
+                    <a href="{{ url_for('logout') }}">Logout</a>
+                {% else %}
+                    <a href="{{ url_for('login') }}">Admin Login</a>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="nav">
+            <span style="float:left;"><b>Admin Mode</b></span>
+            <div style="clear:both;"></div>
+        </div>
+        <h1>Admin Dashboard</h1>
+        {% with messages = get_flashed_messages() %}
+          {% if messages %}
+            <ul class="msg">
+            {% for message in messages %}
+              <li>{{ message }}</li>
+            {% endfor %}
+            </ul>
+          {% endif %}
+        {% endwith %}
+
+        <!-- MATERIALS DATABASE UPLOADS -->
+        <div class="section">
+            <h2>Materials Database Uploads</h2>
+            {% if uploads %}
+                <table class="upload-table">
+                    <tr>
+                        <th>Property</th>
+                        <th>Tab</th>
+                        <th>Filename</th>
+                        <th>Uploaded At</th>
+                    </tr>
+                    {% for prop, tab, fname, uploaded_at in uploads %}
+                    <tr>
+                        <td>{{ prop.replace('_', ' ').title() }}</td>
+                        <td>{{ tab.title() }}</td>
+                        <td>
+                            <a href="{{ url_for('uploaded_file', filename=prop + '/' + tab + '/' + fname) }}" target="_blank">
+                                {{ fname }}
+                            </a>
+                        </td>
+                        <td>{{ uploaded_at }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <p>No uploads recorded yet.</p>
+            {% endif %}
+        </div>
+
+        <!-- MUSIC CLIPS UPLOADS -->
+        <div class="section">
+            <h2>Music Clips Uploads</h2>
+            {% if music_clips %}
+                <table class="upload-table">
+                    <tr>
+                        <th>Filename</th>
+                        <th>Title</th>
+                        <th>Description</th>
+                    </tr>
+                    {% for fname, title, desc in music_clips %}
+                    <tr>
+                        <td>
+                            <a href="{{ url_for('uploaded_file', filename='clips/' + fname) }}" target="_blank">
+                                {{ fname }}
+                            </a>
+                        </td>
+                        <td>{{ title }}</td>
+                        <td>{{ desc }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <p>No music clips uploaded yet.</p>
+            {% endif %}
+        </div>
+
+        <div style="margin-top:2em;">
+            <a href="{{ url_for('query_sql') }}">Go to SQL Query Tool</a>
+        </div>
+    </div>
+</body>
+</html>
