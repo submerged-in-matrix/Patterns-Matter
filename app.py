@@ -88,13 +88,12 @@ def admin_home():
     )
 
 # -- View and import (admin only) --
-@app.route('/view/<filename>', methods=['GET', 'POST'])
+@app.route('/view/<path:filename>', methods=['GET', 'POST'])
 def view_table(filename):
-    if not session.get('admin'):
-        return redirect(url_for('login'))
+    admin = session.get('admin', False)
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     ext = filename.rsplit('.', 1)[1].lower()
-    table_name = filename.replace('.', '_').replace('-', '_')
+    table_name = filename.replace('.', '_').replace('-', '_').replace('/', '_').replace('\\', '_')
 
     try:
         if ext == 'csv':
@@ -115,16 +114,19 @@ def view_table(filename):
     except Exception as e:
         return f"Could not read file: {e}"
 
-    if request.method == 'POST' and 'import_sql' in request.form:
+    # Only allow import if admin
+    if admin and request.method == 'POST' and 'import_sql' in request.form:
         with sqlite3.connect(DB_NAME) as conn:
             df.to_sql(table_name, conn, if_exists='replace', index=False)
         flash(f"Table '{table_name}' imported to SQLite.")
+
     return render_template('view_table.html',
                            tables=[df.to_html(classes='data')],
                            titles=df.columns.values,
                            filename=filename,
                            imported_table=table_name,
-                           admin=True)
+                           admin=admin)
+
 
 # -- SQL query tool (admin only) --
 @app.route('/query', methods=['GET', 'POST'])
