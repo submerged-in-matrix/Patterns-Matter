@@ -5,7 +5,7 @@ body {
     background: url("/static/bg.png") no-repeat center center fixed;
     background-size: cover;
     min-height: 100vh;
-    color: #e2e8ee;   /* Improved: softer, more readable text */
+    color: #08e0ec;   /* Improved: softer, more readable text */
 }
 
 /* Overlay for readability */
