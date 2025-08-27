@@ -34,6 +34,10 @@
     {% endif %}
   </div>
 
+  <small>
+    <a class="btn" href="{{ url_for('available_keys') }}">Available Search Keys</a>
+  </small>
+
   <!-- Search -->
   <form action="{{ url_for('search') }}" method="get" class="search-form">
     <input type="text" name="q" placeholder="Search datasets or clips..." required>

@@ -32,7 +32,9 @@
       {% endif %}
     </div>
   </div>
-
+  <small> 
+    <a class="return-home" href="{{ url_for('available_keys') }}">Available Search Keys</a>
+  </small>
   <h1>Admin Dashboard</h1>
 
   {% if audit_rows and audit_rows|length %}

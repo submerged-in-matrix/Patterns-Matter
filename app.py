@@ -1596,6 +1596,88 @@ def search():
     return render_template('search_results.html', query=query, materials=materials, clips=clips)
 ##############################################################################################################################################################
 
+@app.route("/keys", methods=["GET"])
+def available_keys():
+    """
+    Public page listing 'search keys':
+      - Materials properties (slug + pretty title + item counts)
+      - Clip titles
+    Works with either a 'properties' table or by falling back to uploads_log.
+    """
+    PRETTY_FALLBACK = {
+        "bandgap": "Band Gap",
+        "formation_energy": "Formation Energy",
+        "melting_point": "Melting Point",
+        "oxidation_state": "Oxidation State",
+    }
+
+    def table_exists(conn, name):
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (name,),
+        )
+        return cur.fetchone() is not None
+
+    props = []     # list of dicts: {slug, title, count}
+    clip_titles = []
+
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.row_factory = sqlite3.Row
+
+        # Count how many items per property in uploads_log (Drive-only)
+        counts = {}
+        if table_exists(conn, "uploads_log"):
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT property, COUNT(*) AS c
+                  FROM uploads_log
+                 WHERE storage='drive'
+              GROUP BY property
+            """)
+            for r in cur.fetchall():
+                counts[r["property"]] = r["c"]
+
+        # Prefer a 'properties' table if you have it
+        if table_exists(conn, "properties"):
+            cur = conn.cursor()
+            cur.execute("SELECT slug, title FROM properties ORDER BY title")
+            for r in cur.fetchall():
+                slug = r["slug"]
+                title = r["title"] or PRETTY_FALLBACK.get(slug, slug.replace("_", " ").title())
+                props.append({
+                    "slug": slug,
+                    "title": title,
+                    "count": counts.get(slug, 0),
+                })
+        else:
+            # Fall back to any properties that actually exist in uploads_log
+            if counts:
+                for slug, c in sorted(counts.items(), key=lambda t: t[0]):
+                    title = PRETTY_FALLBACK.get(slug, slug.replace("_", " ").title())
+                    props.append({"slug": slug, "title": title, "count": c})
+
+        # Clip titles (if table exists)
+        if table_exists(conn, "clips"):
+            cur = conn.cursor()
+            # Be forgiving about schema variations
+            try:
+                cur.execute("""
+                    SELECT title
+                      FROM clips
+                     WHERE title IS NOT NULL AND TRIM(title)!=''
+                  ORDER BY title COLLATE NOCASE
+                """)
+            except Exception:
+                # Fallback: try a likely column name
+                cur.execute("""
+                    SELECT COALESCE(title, '') AS title FROM clips
+                """)
+            clip_titles = [r[0] for r in cur.fetchall() if (r[0] or "").strip()]
+
+    return render_template("available_keys.html", props=props, clip_titles=clip_titles)
+##############################################################################################################################################################
+
 # DELETE CLIP
 @app.route('/delete_clip/<int:clip_id>', methods=['POST'])
 def delete_clip(clip_id):
