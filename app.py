@@ -1598,12 +1598,6 @@ def search():
 
 @app.route("/keys", methods=["GET"])
 def available_keys():
-    """
-    Public page listing 'search keys':
-      - Materials properties (slug + pretty title + item counts)
-      - Clip titles
-    Works with either a 'properties' table or by falling back to uploads_log.
-    """
     PRETTY_FALLBACK = {
         "bandgap": "Band Gap",
         "formation_energy": "Formation Energy",
@@ -1613,19 +1607,21 @@ def available_keys():
 
     def table_exists(conn, name):
         cur = conn.cursor()
-        cur.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (name,),
-        )
+        cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,))
         return cur.fetchone() is not None
 
-    props = []     # list of dicts: {slug, title, count}
-    clip_titles = []
+    def column_exists(conn, table, col):
+        cur = conn.cursor()
+        cur.execute(f"PRAGMA table_info({table})")
+        return any(r[1].lower() == col.lower() for r in cur.fetchall())
+
+    props = []       # [{slug, title, count}]
+    clip_titles = [] # [str]
 
     with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
 
-        # Count how many items per property in uploads_log (Drive-only)
+        # Count files per property (Drive-only rows)
         counts = {}
         if table_exists(conn, "uploads_log"):
             cur = conn.cursor()
@@ -1638,42 +1634,50 @@ def available_keys():
             for r in cur.fetchall():
                 counts[r["property"]] = r["c"]
 
-        # Prefer a 'properties' table if you have it
+        # Properties: prefer properties table if present, else derive from uploads_log
         if table_exists(conn, "properties"):
+            has_title = column_exists(conn, "properties", "title")
             cur = conn.cursor()
-            cur.execute("SELECT slug, title FROM properties ORDER BY title")
-            for r in cur.fetchall():
-                slug = r["slug"]
-                title = r["title"] or PRETTY_FALLBACK.get(slug, slug.replace("_", " ").title())
-                props.append({
-                    "slug": slug,
-                    "title": title,
-                    "count": counts.get(slug, 0),
-                })
-        else:
-            # Fall back to any properties that actually exist in uploads_log
-            if counts:
-                for slug, c in sorted(counts.items(), key=lambda t: t[0]):
+            if has_title:
+                cur.execute("SELECT slug, title FROM properties ORDER BY COALESCE(title, slug)")
+                rows = cur.fetchall()
+                for r in rows:
+                    slug = r["slug"]
+                    title = (r["title"] or "").strip() or PRETTY_FALLBACK.get(slug, slug.replace("_", " ").title())
+                    props.append({"slug": slug, "title": title, "count": counts.get(slug, 0)})
+            else:
+                # No title column—use slug and prettify
+                cur.execute("SELECT slug FROM properties ORDER BY slug")
+                rows = cur.fetchall()
+                for r in rows:
+                    slug = r["slug"]
                     title = PRETTY_FALLBACK.get(slug, slug.replace("_", " ").title())
-                    props.append({"slug": slug, "title": title, "count": c})
+                    props.append({"slug": slug, "title": title, "count": counts.get(slug, 0)})
+        else:
+            # No properties table—fall back to whatever exists in uploads_log
+            for slug, c in sorted(counts.items(), key=lambda t: t[0]):
+                title = PRETTY_FALLBACK.get(slug, slug.replace("_", " ").title())
+                props.append({"slug": slug, "title": title, "count": c})
 
-        # Clip titles (if table exists)
+        # Clips: pick a reasonable title-like column if available
         if table_exists(conn, "clips"):
             cur = conn.cursor()
-            # Be forgiving about schema variations
-            try:
-                cur.execute("""
-                    SELECT title
+            # find a likely title column
+            cur.execute("PRAGMA table_info(clips)")
+            cols = [r[1].lower() for r in cur.fetchall()]
+            title_col = None
+            for cand in ("title", "name", "label"):
+                if cand in cols:
+                    title_col = cand
+                    break
+            if title_col:
+                cur.execute(f"""
+                    SELECT DISTINCT {title_col} AS t
                       FROM clips
-                     WHERE title IS NOT NULL AND TRIM(title)!=''
-                  ORDER BY title COLLATE NOCASE
+                     WHERE {title_col} IS NOT NULL AND TRIM({title_col})!=''
+                  ORDER BY t COLLATE NOCASE
                 """)
-            except Exception:
-                # Fallback: try a likely column name
-                cur.execute("""
-                    SELECT COALESCE(title, '') AS title FROM clips
-                """)
-            clip_titles = [r[0] for r in cur.fetchall() if (r[0] or "").strip()]
+                clip_titles = [r["t"] for r in cur.fetchall() if (r["t"] or "").strip()]
 
     return render_template("available_keys.html", props=props, clip_titles=clip_titles)
 ##############################################################################################################################################################
