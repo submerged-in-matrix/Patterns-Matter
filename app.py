@@ -1610,10 +1610,39 @@ def available_keys():
         cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,))
         return cur.fetchone() is not None
 
-    def column_exists(conn, table, col):
+    def list_user_tables(conn):
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT name
+              FROM sqlite_master
+             WHERE type='table' AND name NOT LIKE 'sqlite_%'
+             ORDER BY name
+        """)
+        return [r[0] for r in cur.fetchall()]
+
+    def columns_lower(conn, table):
         cur = conn.cursor()
         cur.execute(f"PRAGMA table_info({table})")
-        return any(r[1].lower() == col.lower() for r in cur.fetchall())
+        return [r[1].lower() for r in cur.fetchall()]
+
+    def find_clip_table_and_title_col(conn):
+        # Prefer common names first
+        preferred_tables = ["clips", "music_clips", "drive_clips"]
+        title_candidates = ("title", "name", "label", "clip_title")
+        # 1) try preferred names
+        for t in preferred_tables:
+            if table_exists(conn, t):
+                cols = columns_lower(conn, t)
+                for cand in title_candidates:
+                    if cand in cols:
+                        return t, cand
+        # 2) scan all tables for a title-like column
+        for t in list_user_tables(conn):
+            cols = columns_lower(conn, t)
+            for cand in title_candidates:
+                if cand in cols:
+                    return t, cand
+        return None, None
 
     props = []       # [{slug, title, count}]
     clip_titles = [] # [str]
@@ -1634,11 +1663,13 @@ def available_keys():
             for r in cur.fetchall():
                 counts[r["property"]] = r["c"]
 
-        # Properties: prefer properties table if present, else derive from uploads_log
+        # Prefer a 'properties' table if present; otherwise derive from uploads_log
         if table_exists(conn, "properties"):
-            has_title = column_exists(conn, "properties", "title")
             cur = conn.cursor()
-            if has_title:
+            # check if 'title' exists
+            cur.execute("PRAGMA table_info(properties)")
+            have_title = any(row[1].lower() == "title" for row in cur.fetchall())
+            if have_title:
                 cur.execute("SELECT slug, title FROM properties ORDER BY COALESCE(title, slug)")
                 rows = cur.fetchall()
                 for r in rows:
@@ -1646,38 +1677,28 @@ def available_keys():
                     title = (r["title"] or "").strip() or PRETTY_FALLBACK.get(slug, slug.replace("_", " ").title())
                     props.append({"slug": slug, "title": title, "count": counts.get(slug, 0)})
             else:
-                # No title column—use slug and prettify
                 cur.execute("SELECT slug FROM properties ORDER BY slug")
-                rows = cur.fetchall()
-                for r in rows:
-                    slug = r["slug"]
+                for (slug,) in cur.fetchall():
                     title = PRETTY_FALLBACK.get(slug, slug.replace("_", " ").title())
                     props.append({"slug": slug, "title": title, "count": counts.get(slug, 0)})
         else:
-            # No properties table—fall back to whatever exists in uploads_log
+            # no properties table—derive from uploads_log
             for slug, c in sorted(counts.items(), key=lambda t: t[0]):
                 title = PRETTY_FALLBACK.get(slug, slug.replace("_", " ").title())
                 props.append({"slug": slug, "title": title, "count": c})
 
-        # Clips: pick a reasonable title-like column if available
-        if table_exists(conn, "clips"):
+        # Find clips table + title-like column automatically
+        clip_table, title_col = find_clip_table_and_title_col(conn)
+        if clip_table and title_col:
             cur = conn.cursor()
-            # find a likely title column
-            cur.execute("PRAGMA table_info(clips)")
-            cols = [r[1].lower() for r in cur.fetchall()]
-            title_col = None
-            for cand in ("title", "name", "label"):
-                if cand in cols:
-                    title_col = cand
-                    break
-            if title_col:
-                cur.execute(f"""
-                    SELECT DISTINCT {title_col} AS t
-                      FROM clips
-                     WHERE {title_col} IS NOT NULL AND TRIM({title_col})!=''
-                  ORDER BY t COLLATE NOCASE
-                """)
-                clip_titles = [r["t"] for r in cur.fetchall() if (r["t"] or "").strip()]
+            # Quote identifiers to be safe; SQLite is case-insensitive for identifiers.
+            cur.execute(f'''
+                SELECT DISTINCT "{title_col}" AS t
+                  FROM "{clip_table}"
+                 WHERE "{title_col}" IS NOT NULL AND TRIM("{title_col}")!=''
+              ORDER BY t COLLATE NOCASE
+            ''')
+            clip_titles = [r["t"] for r in cur.fetchall() if (r["t"] or "").strip()]
 
     return render_template("available_keys.html", props=props, clip_titles=clip_titles)
 ##############################################################################################################################################################
@@ -1733,7 +1754,6 @@ def delete_dataset_file(property_name, tab, filename):
     flash(f"Deleted entry: {filename}")
 
     return redirect(url_for('property_detail', property_name=property_name, tab=tab))
-
 ##############################################################################################################################################################
 
 @app.route('/add_drive_clip', methods=['GET', 'POST'])
