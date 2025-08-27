@@ -234,6 +234,62 @@ def _drive_urls(file_id: str) -> (str, str):
     return preview, download
 #=======================================================================================================================================================================#
 
+# ---------- Dynamic properties (catalog) ----------
+def ensure_properties_schema():
+    """Create a simple properties catalog table (once)."""
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS properties (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                slug         TEXT NOT NULL UNIQUE,  -- URL-safe key, e.g. 'bandgap'
+                display_name TEXT NOT NULL,        -- Human title, e.g. 'Band Gap'
+                description  TEXT,
+                visible      INTEGER NOT NULL DEFAULT 1,
+                created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_properties_slug ON properties(slug)")
+        # Seed the 4 existing properties once if table is empty
+        count = c.execute("SELECT COUNT(*) FROM properties").fetchone()[0]
+        if count == 0:
+            seeds = [
+                ("bandgap", "Band Gap", "Band gap datasets and results"),
+                ("formation_energy", "Formation Energy", "Formation energy datasets and results"),
+                ("melting_point", "Melting Point", "Melting point datasets and results"),
+                ("oxidation_state", "Oxidation State", "Oxidation state datasets and results"),
+            ]
+            c.executemany(
+                "INSERT INTO properties (slug, display_name, description) VALUES (?,?,?)", seeds
+            )
+        conn.commit()
+#=======================================================================================================================================================================#
+
+def slugify_property(name: str) -> str:
+    """'My New Pattern' -> 'my_new_pattern'"""
+    s = (name or "").strip().lower()
+    s = re.sub(r"[^0-9a-z]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s or "pattern"
+#=======================================================================================================================================================================#
+
+def ensure_unique_slug(base_slug: str) -> str:
+    """If slug exists, append _2, _3, ..."""
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        slug = base_slug
+        while True:
+            row = c.execute("SELECT 1 FROM properties WHERE slug=?", (slug,)).fetchone()
+            if not row:
+                return slug
+            # bump suffix
+            m = re.search(r"_(\d+)$", slug)
+            if m:
+                slug = f"{base_slug}_{int(m.group(1))+1}"
+            else:
+                slug = f"{base_slug}_2"
+#=======================================================================================================================================================================#
+
 _SQLITE_RESERVED_PREFIXES = ("sqlite_",)
 
 def tableize_basename(name: str) -> str:
@@ -614,6 +670,10 @@ def _run_startup_tasks():
                 ensure_uploads_log_columns()
             except Exception as e:
                 app.logger.warning("ensure_uploads_log_columns at startup: %s", e)
+            try:
+                ensure_properties_schema()
+            except Exception as e:
+                app.logger.warning("ensure_properties_schema at startup: %s", e)
 
             # (Optional) If >> to clean up old local rows or dedupe:
             # try:
@@ -660,14 +720,43 @@ def enforce_admin_idle_timeout():
 def public_home():
     #tables = _list_user_tables()
     return render_template("landing.html")
-
 ##############################################################################################################################################################
 
-@app.route("/materials", methods=["GET"])
+@app.route('/materials', methods=['GET', 'POST'])
 def materials_portal():
-    # Uses your templates/materials_portal.html
-    return render_template("materials_portal.html")
+    is_admin = bool(session.get('admin'))
 
+    # Admin adds a new property
+    if is_admin and request.method == 'POST' and request.form.get('add_property') == '1':
+        display_name = (request.form.get('display_name') or '').strip()
+        description  = (request.form.get('description') or '').strip()
+        if not display_name:
+            flash("Please provide a property name.")
+            return redirect(url_for('materials_portal'))
+
+        base = slugify_property(display_name)
+        slug = ensure_unique_slug(base)
+
+        with sqlite3.connect(DB_NAME) as conn:
+            c = conn.cursor()
+            c.execute(
+                "INSERT INTO properties (slug, display_name, description, visible) VALUES (?,?,?,1)",
+                (slug, display_name, description)
+            )
+            conn.commit()
+
+        flash(f"Added new pattern: {display_name}")
+        return redirect(url_for('property_detail', property_name=slug, tab='dataset'))
+
+    # List visible properties
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.row_factory = sqlite3.Row
+        props = conn.execute(
+            "SELECT slug, display_name, COALESCE(description,'') AS description "
+            "FROM properties WHERE visible=1 ORDER BY display_name"
+        ).fetchall()
+
+    return render_template('materials_portal.html', props=props, admin=is_admin)
 ##############################################################################################################################################################
 
 # SQL Query Tool (admin only, CRUD, multi-statement)
@@ -796,7 +885,6 @@ def rescan_uploads():
         })
     except Exception as e:
         return jsonify({"status": f"auto_log_material_files failed: {e}"}), 500
-    
 ##############################################################################################################################################################
 
 IDLE_TIMEOUT_SECONDS = 10 * 60  # 10 minutes
@@ -954,14 +1042,20 @@ def diag_routes():
 @app.route('/materials/<property_name>/<tab>', methods=['GET', 'POST'])
 def property_detail(property_name, tab):
     # ---- titles / guards ----
-    pretty_titles = {
-        'bandgap': 'Band Gap',
-        'formation_energy': 'Formation Energy',
-        'melting_point': 'Melting Point',
-        'oxidation_state': 'Oxidation State',
-    }
-    if property_name not in pretty_titles or tab not in ('dataset', 'results'):
+    if tab not in ('dataset', 'results'):
         return "Not found.", 404
+
+    # Try DB-backed title
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        row = c.execute("SELECT display_name FROM properties WHERE slug=?", (property_name,)).fetchone()
+
+    if row:
+        pretty_title = row[0]
+    else:
+        # If unknown property: show 404 (or fallback to prettified slug if you prefer)
+        return "Not found.", 404
+        # pretty_title = property_name.replace('_', ' ').title()
 
     upload_message = ""
     edit_message = ""
@@ -1207,9 +1301,10 @@ def property_detail(property_name, tab):
     table_map = {}
 
     return render_template(
+        
         'property_detail.html',
         property_name=property_name,
-        pretty_title=pretty_titles[property_name],
+        pretty_title=pretty_title,   # <-- passing DB title
         tab=tab,
         uploads=uploads,
         upload_message=upload_message,
