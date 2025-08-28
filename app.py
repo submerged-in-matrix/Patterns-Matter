@@ -1677,61 +1677,91 @@ def search():
     return render_template('search_results.html', query=query, materials=materials, clips=clips)
 ##############################################################################################################################################################
 
-@app.route("/keys")
+@app.route("/keys", methods=["GET"])
 def available_keys():
-    # properties from uploads_log
     props = []
     clip_titles = []
 
+    # --- Materials: distinct properties + counts from uploads_log ---
     try:
         with sqlite3.connect(DB_NAME) as conn:
-            c = conn.cursor()
-
-            c.execute("""
-                SELECT DISTINCT property
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT property, COUNT(*) AS cnt
                   FROM uploads_log
-                 WHERE storage='drive'
-              ORDER BY property
+                 WHERE property IS NOT NULL AND TRIM(property) <> ''
+              GROUP BY property
+              ORDER BY LOWER(property)
             """)
-            props = [r[0] for r in c.fetchall()]
-
-            # make sure clips table exists and is synced (best-effort)
-            ensure_clips_schema()
-            try:
-                sync_clips_from_csv()
-            except Exception:
-                pass
-
-            c.execute("SELECT title FROM clips ORDER BY created_at DESC, id DESC")
-            clip_titles = [r[0] for r in c.fetchall()]
-
+            rows = cur.fetchall()
+            for prop, cnt in rows:
+                slug = (prop or "").strip()
+                if not slug:
+                    continue
+                props.append({
+                    "slug": slug,
+                    "title": slug.replace("_", " ").title(),
+                    "count": int(cnt or 0),
+                })
     except Exception as e:
-        app.logger.warning("available_keys: %s", e)
+        app.logger.warning("available_keys: uploads_log aggregation failed: %s", e)
 
-        # last-resort fallback straight from CSV so the page still renders
-        try:
-            import os, csv
-            path = "/data/drive_music.csv" if os.path.exists("/data/drive_music.csv") else "drive_music.csv"
+    # --- Clips: prefer DB table (music_clips) ---
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT title
+                  FROM music_clips
+                 WHERE title IS NOT NULL AND TRIM(title) <> ''
+              GROUP BY title
+              ORDER BY LOWER(title)
+            """)
+            clip_titles = [r[0] for r in cur.fetchall()]
+    except Exception:
+        # table may not exist yet; we'll fall back to CSV below
+        pass
+
+    # --- Fallback to CSV if DB has no titles yet ---
+    if not clip_titles:
+        import csv, os
+        for path in ("/data/drive_music.csv", "drive_music.csv"):
             if os.path.exists(path):
-                with open(path, newline='', encoding='utf-8') as f:
-                    reader = csv.reader(f)
-                    first = next(reader, None)
-                    if first:
-                        lowered = [x.strip().lower() for x in first]
-                        header = {"title","description","preview_url","download_url"} <= set(lowered)
-                        if not header:
-                            # treat first as data
-                            if first and first[0].strip():
-                                clip_titles.append(first[0].strip())
-                        for row in reader:
-                            if row and row[0].strip():
-                                clip_titles.append(row[0].strip())
-        except Exception as ee:
-            app.logger.warning("available_keys CSV fallback failed: %s", ee)
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        sample = f.read(4096)
+                        f.seek(0)
+                        # Try to detect header; if detection fails, we’ll still handle both cases.
+                        has_header = False
+                        try:
+                            has_header = csv.Sniffer().has_header(sample)
+                        except Exception:
+                            pass
 
-    return render_template("available_keys.html",
-                           properties=props,
-                           clip_titles=clip_titles)
+                        titles = set()
+                        if has_header:
+                            reader = csv.DictReader(f)
+                            for row in reader:
+                                t = (row.get("title") or "").strip()
+                                if t:
+                                    titles.add(t)
+                        else:
+                            reader = csv.reader(f)
+                            for row in reader:
+                                if not row:
+                                    continue
+                                # Your writer used: [title, description, preview_url, download_url]
+                                t = (row[0] or "").strip()
+                                if t:
+                                    titles.add(t)
+
+                        clip_titles = sorted(titles, key=str.lower)
+                        if clip_titles:
+                            break
+                except Exception as e:
+                    app.logger.warning("available_keys: CSV fallback failed for %s: %s", path, e)
+
+    return render_template("available_keys.html", props=props, clip_titles=clip_titles)
 ##############################################################################################################################################################
 
 @app.route('/add_drive_clip', methods=['GET', 'POST'])
