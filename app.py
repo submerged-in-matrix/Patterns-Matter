@@ -467,6 +467,81 @@ def ensure_uploads_log_schema():
         conn.commit()
 #=======================================================================================================================================================================#
 
+def ensure_clips_schema():
+    """Create a durable table for clips (idempotent)."""
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS clips (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                title        TEXT NOT NULL,
+                description  TEXT,
+                preview_url  TEXT NOT NULL,
+                download_url TEXT,
+                created_at   TEXT DEFAULT (CURRENT_TIMESTAMP)
+            )
+        """)
+        # prevents exact duplicates
+        c.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_clips_unique
+            ON clips(title, preview_url)
+        """)
+        conn.commit()
+#=======================================================================================================================================================================#
+
+def sync_clips_from_csv():
+    """
+    Read /data/drive_music.csv (or local fallback) and INSERT OR IGNORE
+    into 'clips'. Handles both headerless rows and a header line.
+    Row format used by your form: [title, description, preview_url, download_url].
+    """
+    import os, csv
+    paths = ["/data/drive_music.csv", "drive_music.csv"]
+    csv_path = next((p for p in paths if os.path.exists(p)), None)
+    if not csv_path:
+        return {"status": "skip", "reason": "csv_missing", "inserted": 0}
+
+    inserted = 0
+    with sqlite3.connect(DB_NAME) as conn, open(csv_path, newline='', encoding='utf-8') as f:
+        c = conn.cursor()
+        reader = csv.reader(f)
+        # detect header
+        first = next(reader, None)
+        had_header = False
+        if first:
+            lowered = [x.strip().lower() for x in first]
+            if {"title", "description", "preview_url", "download_url"} <= set(lowered):
+                had_header = True
+            else:
+                # treat first as data row
+                row = first
+                title = (row[0] if len(row) > 0 else "").strip()
+                desc  = (row[1] if len(row) > 1 else "").strip()
+                prev  = (row[2] if len(row) > 2 else "").strip()
+                down  = (row[3] if len(row) > 3 else "").strip()
+                if title and prev:
+                    c.execute("""INSERT OR IGNORE INTO clips(title,description,preview_url,download_url)
+                                 VALUES (?,?,?,?)""", (title, desc, prev, down))
+                    if c.rowcount > 0: inserted += 1
+
+        # rest of rows
+        for row in reader:
+            if not row: 
+                continue
+            title = (row[0] if len(row) > 0 else "").strip()
+            desc  = (row[1] if len(row) > 1 else "").strip()
+            prev  = (row[2] if len(row) > 2 else "").strip()
+            down  = (row[3] if len(row) > 3 else "").strip()
+            if not (title and prev):
+                continue
+            c.execute("""INSERT OR IGNORE INTO clips(title,description,preview_url,download_url)
+                         VALUES (?,?,?,?)""", (title, desc, prev, down))
+            if c.rowcount > 0: inserted += 1
+
+        conn.commit()
+    return {"status": "ok", "inserted": inserted}
+#=======================================================================================================================================================================#
+
 def dedupe_uploads_log():
     """Remove duplicate (property,tab,filename) rows and enforce unique index."""
     with sqlite3.connect(DB_NAME) as conn:
@@ -674,6 +749,12 @@ def _run_startup_tasks():
                 ensure_properties_schema()
             except Exception as e:
                 app.logger.warning("ensure_properties_schema at startup: %s", e)
+            try:
+                ensure_clips_schema()
+                sync_clips_from_csv()  # best-effort; keeps DB in step with CSV
+            except Exception as e:
+                app.logger.warning("clips startup sync: %s", e)
+
 
             # (Optional) If >> to clean up old local rows or dedupe:
             # try:
@@ -1596,164 +1677,61 @@ def search():
     return render_template('search_results.html', query=query, materials=materials, clips=clips)
 ##############################################################################################################################################################
 
-@app.route("/keys", methods=["GET"])
+@app.route("/keys")
 def available_keys():
-    PRETTY_FALLBACK = {
-        "bandgap": "Band Gap",
-        "formation_energy": "Formation Energy",
-        "melting_point": "Melting Point",
-        "oxidation_state": "Oxidation State",
-    }
+    # properties from uploads_log
+    props = []
+    clip_titles = []
 
-    def table_exists(conn, name):
-        cur = conn.cursor()
-        cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,))
-        return cur.fetchone() is not None
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            c = conn.cursor()
 
-    def list_user_tables(conn):
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT name
-              FROM sqlite_master
-             WHERE type='table' AND name NOT LIKE 'sqlite_%'
-             ORDER BY name
-        """)
-        return [r[0] for r in cur.fetchall()]
-
-    def columns_lower(conn, table):
-        cur = conn.cursor()
-        cur.execute(f"PRAGMA table_info({table})")
-        return [r[1].lower() for r in cur.fetchall()]
-
-    def find_clip_table_and_title_col(conn):
-        # Prefer common names first
-        preferred_tables = ["clips", "music_clips", "drive_clips"]
-        title_candidates = ("title", "name", "label", "clip_title")
-        # 1) try preferred names
-        for t in preferred_tables:
-            if table_exists(conn, t):
-                cols = columns_lower(conn, t)
-                for cand in title_candidates:
-                    if cand in cols:
-                        return t, cand
-        # 2) scan all tables for a title-like column
-        for t in list_user_tables(conn):
-            cols = columns_lower(conn, t)
-            for cand in title_candidates:
-                if cand in cols:
-                    return t, cand
-        return None, None
-
-    props = []       # [{slug, title, count}]
-    clip_titles = [] # [str]
-
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = sqlite3.Row
-
-        # Count files per property (Drive-only rows)
-        counts = {}
-        if table_exists(conn, "uploads_log"):
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT property, COUNT(*) AS c
+            c.execute("""
+                SELECT DISTINCT property
                   FROM uploads_log
                  WHERE storage='drive'
-              GROUP BY property
+              ORDER BY property
             """)
-            for r in cur.fetchall():
-                counts[r["property"]] = r["c"]
+            props = [r[0] for r in c.fetchall()]
 
-        # Prefer a 'properties' table if present; otherwise derive from uploads_log
-        if table_exists(conn, "properties"):
-            cur = conn.cursor()
-            # check if 'title' exists
-            cur.execute("PRAGMA table_info(properties)")
-            have_title = any(row[1].lower() == "title" for row in cur.fetchall())
-            if have_title:
-                cur.execute("SELECT slug, title FROM properties ORDER BY COALESCE(title, slug)")
-                rows = cur.fetchall()
-                for r in rows:
-                    slug = r["slug"]
-                    title = (r["title"] or "").strip() or PRETTY_FALLBACK.get(slug, slug.replace("_", " ").title())
-                    props.append({"slug": slug, "title": title, "count": counts.get(slug, 0)})
-            else:
-                cur.execute("SELECT slug FROM properties ORDER BY slug")
-                for (slug,) in cur.fetchall():
-                    title = PRETTY_FALLBACK.get(slug, slug.replace("_", " ").title())
-                    props.append({"slug": slug, "title": title, "count": counts.get(slug, 0)})
-        else:
-            # no properties table—derive from uploads_log
-            for slug, c in sorted(counts.items(), key=lambda t: t[0]):
-                title = PRETTY_FALLBACK.get(slug, slug.replace("_", " ").title())
-                props.append({"slug": slug, "title": title, "count": c})
+            # make sure clips table exists and is synced (best-effort)
+            ensure_clips_schema()
+            try:
+                sync_clips_from_csv()
+            except Exception:
+                pass
 
-        # Find clips table + title-like column automatically
-        clip_table, title_col = find_clip_table_and_title_col(conn)
-        if clip_table and title_col:
-            cur = conn.cursor()
-            # Quote identifiers to be safe; SQLite is case-insensitive for identifiers.
-            cur.execute(f'''
-                SELECT DISTINCT "{title_col}" AS t
-                  FROM "{clip_table}"
-                 WHERE "{title_col}" IS NOT NULL AND TRIM("{title_col}")!=''
-              ORDER BY t COLLATE NOCASE
-            ''')
-            clip_titles = [r["t"] for r in cur.fetchall() if (r["t"] or "").strip()]
+            c.execute("SELECT title FROM clips ORDER BY created_at DESC, id DESC")
+            clip_titles = [r[0] for r in c.fetchall()]
 
-    return render_template("available_keys.html", props=props, clip_titles=clip_titles)
-##############################################################################################################################################################
-
-# DELETE CLIP
-@app.route('/delete_clip/<int:clip_id>', methods=['POST'])
-def delete_clip(clip_id):
-    if not session.get('admin'):
-        return redirect(url_for('login'))
-    # Find filename to delete from disk
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        c.execute("SELECT filename FROM music_clips WHERE id = ?", (clip_id,))
-        row = c.fetchone()
-        if row:
-            filename = row[0].replace('\\','/')
-            full_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            if os.path.isfile(full_path):
-                os.remove(full_path)
-            c.execute("DELETE FROM music_clips WHERE id = ?", (clip_id,))
-            conn.commit()
-    return redirect(url_for('public_clips'))
-##############################################################################################################################################################
-
-@app.route('/delete_dataset_file/<property_name>/<tab>/<path:filename>', methods=['POST'])
-def delete_dataset_file(property_name, tab, filename):
-    if not session.get('admin'):
-        return redirect(url_for('login'))
-
-    # 1) Remove local file if it exists (we rarely use this now, but harmless)
-    try:
-        uploads_root = current_app.config.get("UPLOAD_FOLDER", UPLOAD_FOLDER)
-        base_dir = os.path.join(uploads_root, property_name, tab)
-        # Only sanitize for the filesystem path:
-        safe_fs_name = secure_filename(os.path.basename(filename))
-        target_path = os.path.realpath(os.path.join(base_dir, safe_fs_name))
-        base_dir_real = os.path.realpath(base_dir)
-        if target_path.startswith(base_dir_real + os.sep) and os.path.isfile(target_path):
-            os.remove(target_path)
     except Exception as e:
-        current_app.logger.warning("File delete warning for %s: %s", filename, e)
+        app.logger.warning("available_keys: %s", e)
 
-    # 2) Delete the catalog row by the *original* filename exactly
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        c.execute(
-            "DELETE FROM uploads_log WHERE property=? AND tab=? AND filename=?",
-            (property_name, tab, filename)   # <- original, NOT secure_filename
-        )
-        conn.commit()
+        # last-resort fallback straight from CSV so the page still renders
+        try:
+            import os, csv
+            path = "/data/drive_music.csv" if os.path.exists("/data/drive_music.csv") else "drive_music.csv"
+            if os.path.exists(path):
+                with open(path, newline='', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    first = next(reader, None)
+                    if first:
+                        lowered = [x.strip().lower() for x in first]
+                        header = {"title","description","preview_url","download_url"} <= set(lowered)
+                        if not header:
+                            # treat first as data
+                            if first and first[0].strip():
+                                clip_titles.append(first[0].strip())
+                        for row in reader:
+                            if row and row[0].strip():
+                                clip_titles.append(row[0].strip())
+        except Exception as ee:
+            app.logger.warning("available_keys CSV fallback failed: %s", ee)
 
-    # Optional: flash a message (you’re already showing flashes site-wide)
-    flash(f"Deleted entry: {filename}")
-
-    return redirect(url_for('property_detail', property_name=property_name, tab=tab))
+    return render_template("available_keys.html",
+                           properties=props,
+                           clip_titles=clip_titles)
 ##############################################################################################################################################################
 
 @app.route('/add_drive_clip', methods=['GET', 'POST'])
@@ -1768,14 +1746,9 @@ def add_drive_clip():
         description = request.form.get('description', '').strip()
 
         def extract_drive_id(link):
-            # Accept both full share URLs and raw file IDs
-            match = re.search(r'/d/([a-zA-Z0-9_-]+)', link)
+            match = re.search(r'/d/([a-zA-Z0-9_-]+)', link) or re.search(r'id=([a-zA-Z0-9_-]+)', link)
             if match:
                 return match.group(1)
-            match = re.search(r'id=([a-zA-Z0-9_-]+)', link)
-            if match:
-                return match.group(1)
-            # Fallback: raw ID
             if re.match(r'^[a-zA-Z0-9_-]{10,}$', link):
                 return link
             return None
@@ -1785,12 +1758,23 @@ def add_drive_clip():
             preview_url = f"https://drive.google.com/file/d/{file_id}/preview"
             download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
             try:
+                # 1) append to CSV (legacy)
                 with open('/data/drive_music.csv', 'a', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f)
                     writer.writerow([title, description, preview_url, download_url])
+
+                # 2) mirror into DB (new)
+                ensure_clips_schema()
+                with sqlite3.connect(DB_NAME) as conn:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO clips(title, description, preview_url, download_url)
+                        VALUES (?, ?, ?, ?)
+                    """, (title, description, preview_url, download_url))
+                    conn.commit()
+
                 message = "✅ Clip added successfully!"
             except Exception as e:
-                message = f"❌ Error writing to CSV: {e}"
+                message = f"❌ Error saving clip: {e}"
         else:
             message = "❌ Invalid link or missing title."
 
