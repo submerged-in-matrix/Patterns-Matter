@@ -66,6 +66,14 @@
           </audio>
         {% else %}
           <a href="{{ preview }}" target="_blank">{{ preview }}</a>
+        {% if admin %}
+          <form action="{{ url_for('delete_clip') }}" method="post" style="display:inline;"
+              onsubmit="return confirm('Delete this clip from the catalog?');">
+            <input type="hidden" name="title" value="{{ title }}">
+            <input type="hidden" name="preview" value="{{ preview }}">
+            <input type="hidden" name="download" value="{{ download }}">
+            <button type="submit" class="delete-btn">Delete</button>
+          </form>
         {% endif %}
 
         {% if download %}

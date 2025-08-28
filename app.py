@@ -1,4 +1,5 @@
-                    # Toydatabase for Patterns Matter #
+#################################################################### Toydatabase for Patterns Matter ###############################################################################################
+####################################################################################################################################################################################################
 # ======= Imports ====== #
 
 from flask import Flask, request, redirect, url_for, render_template, send_from_directory, flash, session, current_app, abort, jsonify
@@ -18,10 +19,9 @@ import csv
 # Google Drive API imports
 import io, base64, zipfile
 from typing import List, Dict, Optional
-
-
+#*******************************************************************************************************************************************************************************************************#
 # ========== SETTINGS (Drive-only materials; DB persisted on Fly volume) ==========
-# Persist app state (SQLite DB, optional legacy uploads) on Fly's volume
+
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -46,7 +46,7 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=IS_PROD,
     )
-
+#*******************************************************************************************************************************************************************************************************#
 # ---------- Secrets: require in prod, friendly defaults in dev ----------
 
 def _require_env(name: str) -> str:
@@ -67,7 +67,7 @@ else:
 
 # Google Drive scope for the Service Account (secrets provided via Fly)
 GDRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
-
+#********************************************************************************************************************************************************************************************************#
 
 # -------------------------- ----------------Utility Functions ---------------------------------------------------------------------------------------------------------------------
 
@@ -79,6 +79,7 @@ def allowed_results_file(filename):
 
 def allowed_music_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_MUSIC_EXTENSIONS
+#********************************************************************************************************************************************************************************************************#
 
 # ================================================================= Helper Functions ((8 helpers for drive-api))================================================== #
 
@@ -1681,6 +1682,96 @@ def delete_dataset_file(property_name, tab, filename):
         conn.commit()
 
     return redirect(url_for('property_detail', property_name=property_name, tab=tab))
+##############################################################################################################################################################
+
+def _clips_csv_path() -> str:
+    p = "/data/drive_music.csv"
+    return p if os.path.exists(p) else "drive_music.csv"
+
+def _table_exists(conn, name: str) -> bool:
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,))
+    return cur.fetchone() is not None
+
+@app.route("/delete_clip", methods=["POST"])
+def delete_clip():
+    if not session.get("admin"):
+        return redirect(url_for("login"))
+
+    title    = (request.form.get("title") or "").strip()
+    preview  = (request.form.get("preview") or "").strip()
+    download = (request.form.get("download") or "").strip()
+
+    if not title or not preview:
+        flash("Missing clip identifiers.")
+        return redirect(url_for("public_clips"))
+
+    # --- CSV delete (preserve header if present)
+    import csv, tempfile, shutil
+    csv_path = _clips_csv_path()
+    removed_csv = False
+    if os.path.exists(csv_path):
+        with open(csv_path, "r", encoding="utf-8", newline="") as f:
+            rows = list(csv.reader(f))
+        header = rows[0] if rows else []
+        has_header = header and any(h.lower() == "title" for h in header)
+        start = 1 if has_header else 0
+
+        kept = rows[:start]
+        for r in rows[start:]:
+            # support both old (no header) [title, desc, preview, download]
+            # and headered CSV with same column order
+            t = (r[0] if len(r) > 0 else "").strip()
+            p = (r[2] if len(r) > 2 else "").strip()
+            d = (r[3] if len(r) > 3 else "").strip()
+            if not removed_csv and t == title and p == preview and (not download or d == download):
+                removed_csv = True
+                continue
+            kept.append(r)
+
+        with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", newline="") as tmp:
+            csv.writer(tmp).writerows(kept)
+            tmp_name = tmp.name
+        shutil.move(tmp_name, csv_path)
+
+    # --- DB delete (handle either 'clips' table or legacy 'music_clips')
+    removed_db = False
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            if _table_exists(conn, "clips"):
+                # expected schema: clips(title, description, preview_url, download_url)
+                cur = conn.cursor()
+                if download:
+                    cur.execute(
+                        "DELETE FROM clips WHERE title=? AND preview_url=? AND download_url=?",
+                        (title, preview, download),
+                    )
+                else:
+                    cur.execute(
+                        "DELETE FROM clips WHERE title=? AND preview_url=?",
+                        (title, preview),
+                    )
+                removed_db = cur.rowcount > 0
+                conn.commit()
+            elif _table_exists(conn, "music_clips"):
+                # legacy schema: music_clips(filename=preview||'||'||download, title, description)
+                fn = f"{preview}||{download}" if download else f"{preview}||"
+                cur = conn.cursor()
+                cur.execute(
+                    "DELETE FROM music_clips WHERE title=? AND filename=?",
+                    (title, fn),
+                )
+                removed_db = cur.rowcount > 0
+                conn.commit()
+    except Exception as e:
+        app.logger.warning("delete_clip DB error: %s", e)
+
+    if removed_csv or removed_db:
+        flash("Clip deleted from catalog.")
+    else:
+        flash("Clip not found (nothing removed).")
+
+    return redirect(url_for("public_clips"))
 ##############################################################################################################################################################
 
 # SEARCH ROUTE
