@@ -1598,50 +1598,6 @@ def download(table):
     return send_from_directory(UPLOAD_FOLDER, f"{table}.csv", as_attachment=True)
 ##############################################################################################################################################################
 
-@app.route('/migrate_csv_to_db')
-def migrate_csv_to_db():
-    if not session.get('admin'):
-        return "❌ Admin login required", 403
-
-    import os
-    csv_path = '/data/drive_music.csv' if os.path.exists('/data/drive_music.csv') else 'drive_music.csv'
-
-    try:
-        with sqlite3.connect(DB_NAME) as conn:
-            c = conn.cursor()
-
-            # Step 1: Drop and recreate table
-            c.execute("DROP TABLE IF EXISTS music_clips")
-            c.execute('''
-                CREATE TABLE music_clips (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    filename TEXT,
-                    title TEXT,
-                    description TEXT
-                )
-            ''')
-
-            # Step 2: Insert from CSV
-            with open(csv_path, encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    title = row.get('title', '').strip()
-                    description = row.get('description', '').strip()
-                    preview = row.get('preview_url', '').strip()
-                    download = row.get('download_url', '').strip()
-                    if preview and download:
-                        db_value = f"{preview}||{download}"
-                        c.execute(
-                            "INSERT INTO music_clips (filename, title, description) VALUES (?, ?, ?)",
-                            (db_value, title, description)
-                        )
-
-            conn.commit()
-        return "✅ Table recreated and data loaded from CSV!"
-    except Exception as e:
-        return f"❌ Error: {e}"
-##############################################################################################################################################################
-
 # --- Delete a catalog row (safe for Drive items) ---
 @app.route('/delete_dataset_file/<property_name>/<tab>/<path:filename>', methods=['POST'])
 def delete_dataset_file(property_name, tab, filename):
