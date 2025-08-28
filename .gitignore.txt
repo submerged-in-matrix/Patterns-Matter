@@ -3,3 +3,4 @@ uploads/
 __pycache__/
 *.pyc
 .env
+*.ipynb linguist-language=Python
