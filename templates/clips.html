@@ -22,6 +22,21 @@
   .download-link { color: #6af; font-weight: bold; }
   .admin-link a { color: #fff; text-decoration: none; margin-left: 1em; font-weight: bold; }
   .admin-link a:hover { text-decoration: underline; }
+
+  .delete-btn {
+    margin-top: 0.7em;
+    margin-left: 1em;
+    background: #c33;
+    border: none;
+    color: #fff;
+    font-weight: bold;
+    padding: 0.3em 0.7em;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .delete-btn:hover {
+    background: #a11;
+  }
 </style>
 {% endblock %}
 
@@ -66,18 +81,20 @@
           </audio>
         {% else %}
           <a href="{{ preview }}" target="_blank">{{ preview }}</a>
+        {% endif %}
+
+        {% if download %}
+          <br><a class="download-link" href="{{ download }}" target="_blank">Download</a>
+        {% endif %}
+
         {% if admin %}
           <form action="{{ url_for('delete_clip') }}" method="post" style="display:inline;"
-              onsubmit="return confirm('Delete this clip from the catalog?');">
+                onsubmit="return confirm('Delete this clip from the catalog?');">
             <input type="hidden" name="title" value="{{ title }}">
             <input type="hidden" name="preview" value="{{ preview }}">
             <input type="hidden" name="download" value="{{ download }}">
             <button type="submit" class="delete-btn">Delete</button>
           </form>
-        {% endif %}
-
-        {% if download %}
-          <br><a class="download-link" href="{{ download }}" target="_blank">Download</a>
         {% endif %}
       </div>
     {% endfor %}
@@ -89,5 +106,5 @@
     <a href="{{ url_for('public_home') }}">Home</a> |
     <a href="{{ url_for('materials_portal') }}">Materials Database</a>
   </div>
-</div>
+</div> 
 {% endblock %}
