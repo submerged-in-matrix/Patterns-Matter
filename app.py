@@ -1682,31 +1682,44 @@ def available_keys():
     props = []
     clip_titles = []
 
-    # --- Materials: distinct properties + counts from uploads_log ---
+    # --- Materials: list every property from `properties`, plus file count from uploads_log ---
     try:
         with sqlite3.connect(DB_NAME) as conn:
             cur = conn.cursor()
             cur.execute("""
-                SELECT property, COUNT(*) AS cnt
-                  FROM uploads_log
-                 WHERE property IS NOT NULL AND TRIM(property) <> ''
-              GROUP BY property
-              ORDER BY LOWER(property)
+                SELECT p.slug, p.title, COALESCE(COUNT(u.filename), 0) AS cnt
+                  FROM properties p
+                  LEFT JOIN uploads_log u
+                         ON u.property = p.slug
+              GROUP BY p.slug, p.title
+              ORDER BY LOWER(COALESCE(p.title, p.slug))
             """)
-            rows = cur.fetchall()
-            for prop, cnt in rows:
-                slug = (prop or "").strip()
-                if not slug:
-                    continue
-                props.append({
-                    "slug": slug,
-                    "title": slug.replace("_", " ").title(),
-                    "count": int(cnt or 0),
-                })
+            for slug, raw_title, cnt in cur.fetchall():
+                title = (raw_title or slug.replace("_", " ").title()).strip()
+                props.append({"slug": slug, "title": title, "count": int(cnt or 0)})
     except Exception as e:
-        app.logger.warning("available_keys: uploads_log aggregation failed: %s", e)
+        # Fallback if `properties` doesn't exist yet: derive from uploads_log
+        app.logger.warning("available_keys: LEFT JOIN failed (%s); falling back.", e)
+        try:
+            with sqlite3.connect(DB_NAME) as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT property, COUNT(*) AS cnt
+                      FROM uploads_log
+                     WHERE property IS NOT NULL AND TRIM(property) <> ''
+                  GROUP BY property
+                  ORDER BY LOWER(property)
+                """)
+                for prop, cnt in cur.fetchall():
+                    slug = (prop or "").strip()
+                    if slug:
+                        props.append({"slug": slug,
+                                      "title": slug.replace("_", " ").title(),
+                                      "count": int(cnt or 0)})
+        except Exception as e2:
+            app.logger.warning("available_keys: uploads_log fallback failed: %s", e2)
 
-    # --- Clips: prefer DB table (music_clips) ---
+    # --- Clips: prefer DB table (music_clips); fallback to CSV if needed ---
     try:
         with sqlite3.connect(DB_NAME) as conn:
             cur = conn.cursor()
@@ -1719,10 +1732,8 @@ def available_keys():
             """)
             clip_titles = [r[0] for r in cur.fetchall()]
     except Exception:
-        # table may not exist yet; we'll fall back to CSV below
-        pass
+        pass  # table may not exist; try CSV below
 
-    # --- Fallback to CSV if DB has no titles yet ---
     if not clip_titles:
         import csv, os
         for path in ("/data/drive_music.csv", "drive_music.csv"):
@@ -1731,29 +1742,23 @@ def available_keys():
                     with open(path, encoding="utf-8") as f:
                         sample = f.read(4096)
                         f.seek(0)
-                        # Try to detect header; if detection fails, we’ll still handle both cases.
-                        has_header = False
+                        titles = set()
                         try:
                             has_header = csv.Sniffer().has_header(sample)
                         except Exception:
-                            pass
+                            has_header = False
 
-                        titles = set()
                         if has_header:
                             reader = csv.DictReader(f)
                             for row in reader:
                                 t = (row.get("title") or "").strip()
-                                if t:
-                                    titles.add(t)
+                                if t: titles.add(t)
                         else:
                             reader = csv.reader(f)
                             for row in reader:
-                                if not row:
-                                    continue
-                                # Your writer used: [title, description, preview_url, download_url]
-                                t = (row[0] or "").strip()
-                                if t:
-                                    titles.add(t)
+                                if row:
+                                    t = (row[0] or "").strip()
+                                    if t: titles.add(t)
 
                         clip_titles = sorted(titles, key=str.lower)
                         if clip_titles:
