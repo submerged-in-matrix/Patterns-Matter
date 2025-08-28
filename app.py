@@ -1677,94 +1677,50 @@ def search():
     return render_template('search_results.html', query=query, materials=materials, clips=clips)
 ##############################################################################################################################################################
 
-@app.route("/keys", methods=["GET"])
+@app.route("/keys")
 def available_keys():
-    props = []
+    # --- Materials properties (always list all visible ones) ---
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                p.slug,
+                p.display_name AS title,
+                COALESCE((
+                    SELECT COUNT(*)
+                    FROM uploads_log u
+                    WHERE u.property = p.slug
+                      AND COALESCE(u.storage, 'local') = 'drive'
+                ), 0) AS count
+            FROM properties p
+            WHERE COALESCE(p.visible, 1) = 1
+            ORDER BY p.display_name
+        """)
+        props = cur.fetchall()
+
+    # --- Clip titles: prefer DB table; fall back to CSV (/data/drive_music.csv) ---
     clip_titles = []
-
-    # --- Materials: list every property from `properties`, plus file count from uploads_log ---
     try:
         with sqlite3.connect(DB_NAME) as conn:
             cur = conn.cursor()
-            cur.execute("""
-                SELECT p.slug, p.title, COALESCE(COUNT(u.filename), 0) AS cnt
-                  FROM properties p
-                  LEFT JOIN uploads_log u
-                         ON u.property = p.slug
-              GROUP BY p.slug, p.title
-              ORDER BY LOWER(COALESCE(p.title, p.slug))
-            """)
-            for slug, raw_title, cnt in cur.fetchall():
-                title = (raw_title or slug.replace("_", " ").title()).strip()
-                props.append({"slug": slug, "title": title, "count": int(cnt or 0)})
-    except Exception as e:
-        # Fallback if `properties` doesn't exist yet: derive from uploads_log
-        app.logger.warning("available_keys: LEFT JOIN failed (%s); falling back.", e)
-        try:
-            with sqlite3.connect(DB_NAME) as conn:
-                cur = conn.cursor()
-                cur.execute("""
-                    SELECT property, COUNT(*) AS cnt
-                      FROM uploads_log
-                     WHERE property IS NOT NULL AND TRIM(property) <> ''
-                  GROUP BY property
-                  ORDER BY LOWER(property)
-                """)
-                for prop, cnt in cur.fetchall():
-                    slug = (prop or "").strip()
-                    if slug:
-                        props.append({"slug": slug,
-                                      "title": slug.replace("_", " ").title(),
-                                      "count": int(cnt or 0)})
-        except Exception as e2:
-            app.logger.warning("available_keys: uploads_log fallback failed: %s", e2)
-
-    # --- Clips: prefer DB table (music_clips); fallback to CSV if needed ---
-    try:
-        with sqlite3.connect(DB_NAME) as conn:
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT title
-                  FROM music_clips
-                 WHERE title IS NOT NULL AND TRIM(title) <> ''
-              GROUP BY title
-              ORDER BY LOWER(title)
-            """)
+            cur.execute("SELECT title FROM music_clips WHERE title <> '' ORDER BY id DESC")
             clip_titles = [r[0] for r in cur.fetchall()]
     except Exception:
-        pass  # table may not exist; try CSV below
+        pass
 
     if not clip_titles:
-        import csv, os
-        for path in ("/data/drive_music.csv", "drive_music.csv"):
-            if os.path.exists(path):
-                try:
-                    with open(path, encoding="utf-8") as f:
-                        sample = f.read(4096)
-                        f.seek(0)
-                        titles = set()
-                        try:
-                            has_header = csv.Sniffer().has_header(sample)
-                        except Exception:
-                            has_header = False
-
-                        if has_header:
-                            reader = csv.DictReader(f)
-                            for row in reader:
-                                t = (row.get("title") or "").strip()
-                                if t: titles.add(t)
-                        else:
-                            reader = csv.reader(f)
-                            for row in reader:
-                                if row:
-                                    t = (row[0] or "").strip()
-                                    if t: titles.add(t)
-
-                        clip_titles = sorted(titles, key=str.lower)
-                        if clip_titles:
-                            break
-                except Exception as e:
-                    app.logger.warning("available_keys: CSV fallback failed for %s: %s", path, e)
+        try:
+            with open("/data/drive_music.csv", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                need = {"title", "description", "preview_url", "download_url"}
+                if reader.fieldnames and need.issubset(set(reader.fieldnames)):
+                    for row in reader:
+                        t = (row.get("title") or "").strip()
+                        if t:
+                            clip_titles.append(t)
+        except Exception:
+            pass
 
     return render_template("available_keys.html", props=props, clip_titles=clip_titles)
 ##############################################################################################################################################################
