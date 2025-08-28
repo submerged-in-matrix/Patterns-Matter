@@ -1641,6 +1641,48 @@ def migrate_csv_to_db():
         return f"❌ Error: {e}"
 ##############################################################################################################################################################
 
+# --- Delete a catalog row (safe for Drive items) ---
+@app.route('/delete_dataset_file/<property_name>/<tab>/<path:filename>', methods=['POST'])
+def delete_dataset_file(property_name, tab, filename):
+    if not session.get('admin'):
+        return redirect(url_for('login'))
+
+    safe_name = os.path.basename(filename)
+
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+
+        # Check storage to avoid deleting remote Drive content
+        c.execute("""
+            SELECT COALESCE(storage,'local') AS storage
+              FROM uploads_log
+             WHERE property=? AND tab=? AND filename=?
+            LIMIT 1
+        """, (property_name, tab, safe_name))
+        row = c.fetchone()
+        storage = (row[0] if row else 'local')
+
+        # Best-effort local file delete only if not a Drive item
+        if storage != 'drive':
+            uploads_root = current_app.config.get("UPLOAD_FOLDER", UPLOAD_FOLDER)
+            base_dir = os.path.realpath(os.path.join(uploads_root, property_name, tab))
+            target = os.path.realpath(os.path.join(base_dir, safe_name))
+            if target.startswith(base_dir + os.sep) and os.path.isfile(target):
+                try:
+                    os.remove(target)
+                except Exception as e:
+                    current_app.logger.warning("Local delete failed: %s", e)
+
+        # Remove the catalog entry
+        c.execute(
+            "DELETE FROM uploads_log WHERE property=? AND tab=? AND filename=?",
+            (property_name, tab, safe_name)
+        )
+        conn.commit()
+
+    return redirect(url_for('property_detail', property_name=property_name, tab=tab))
+##############################################################################################################################################################
+
 # SEARCH ROUTE
 @app.route('/search')
 def search():
