@@ -49,7 +49,7 @@ This is intentionally a **proof-of-concept RDBMS**, not a production data platfo
 
 - **Relational modeling** of the ML pipeline lifecycle (raw → featurized → results) with proper foreign-key-like linkage between stages
 - **Search by key** across both materials properties and clip metadata from a single interface
-- **Admin-gated uploads** with metadata capture at ingest time
+- **Admin-gated uploads** with metadata capture at ingest time and SQL query to the database.
 - **Hybrid storage** — metadata lives in the database, heavy files live on Google Drive, the app stitches them together at query time
 - **Deployment on Fly.io** as a lightweight, always-on web service
 
@@ -71,7 +71,7 @@ patterns-matter.fly.dev
 | Layer | Technology |
 |---|---|
 | **Backend** | Python (Flask / similar lightweight framework) |
-| **Database** | Relational DB (SQLite / PostgreSQL) |
+| **Database** | Relational DB (SQLite) |
 | **File Storage** | Google Drive API (view + download links) |
 | **Deployment** | Fly.io |
 | **Frontend** | Server-rendered HTML with search |
