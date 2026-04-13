@@ -217,6 +217,6 @@ TBD — choose MIT/Apache-2.0 or similar if you want broad reuse.
 
 ---
 
-> Diagram embedded below; if viewing on GitHub, ensure the image exists alongside the README.
+
 
 ![Architecture Diagram](architecture_diagram.png)
