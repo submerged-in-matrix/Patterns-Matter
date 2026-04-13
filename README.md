@@ -193,7 +193,7 @@ To simulate Drive locally, you can keep a small `uploads/` tree and use the “l
 
 ---
 
-## 8) Future Work
+## 8) probable extensions
 
 - OAuth user uploads (end-user Drive).
 - Server-side previews for large CSVs (streamed, chunked).
@@ -202,11 +202,6 @@ To simulate Drive locally, you can keep a small `uploads/` tree and use the “l
 
 ---
 
-## 9) License
-
-TBD — choose MIT/Apache-2.0 or similar if you want broad reuse.
-
----
 
 ### Appendix: Function Index (quick map)
 - **Drive**: `get_drive_service`, `_drive_extract_id`, `drive_find_or_create_folder`, `drive_ensure_property_tab_folder`, `drive_list_folder_files`, `drive_upload_bytes`, `_drive_urls`
