@@ -32,9 +32,9 @@ DB_NAME = os.path.join(DATA_DIR, "patterns-matter.db")
 UPLOAD_FOLDER = os.path.join(DATA_DIR, "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-ALLOWED_DATASET_EXTENSIONS = {"csv", "npy"}
-ALLOWED_RESULTS_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "pdf", "docx"}
-ALLOWED_MUSIC_EXTENSIONS   = {"mp3", "wav", "m4a", "ogg", "mp4"}
+ALLOWED_DATASET_EXTENSIONS = {"csv", "npy", "dat", "in", "inp", "jsonl", ""}
+ALLOWED_RESULTS_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "pdf", "docx", "csv", "xlsx", "out", "dat", "json", "gz"}
+ALLOWED_MUSIC_EXTENSIONS   = {"gpx", "pdf"}
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
