@@ -2,7 +2,7 @@
 
 # 🎸 Patterns Matter
 
-**A personal RDBMS proof-of-concept at the intersection of Materials Science, AI, and Music**
+**A personal RDBMS proof-of-concept database for  documenting own work in a custom mapping.**
 
 [![Live App](https://img.shields.io/badge/Live-patterns--matter.fly.dev-blueviolet)](https://patterns-matter.fly.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
