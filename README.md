@@ -17,7 +17,7 @@
 
 ## Why This Exists
 
-Every ML project in materials science follows the same arc: **raw data → featurization → model → results**. But datasets scatter across Jupyter notebooks, Google Drive folders, and local directories. Results lose their link to the exact feature matrix that produced them. Six months later, you can't reconstruct which version of the band gap data gave you that R² of 0.94.
+Every ML project in materials science follows the same arc: **raw data → featurization → model → results**. But datasets scatter across Jupyter notebooks, Google Drive folders, and local directories. Results lose their link to the exact feature matrix that produced them. 
 
 **Patterns Matter** is a toy-scale but architecturally deliberate relational database that solves this by mapping the full pipeline — `Raw Data → Featurized Data → Results` — as first-class, queryable records. Every dataset entry links to its source, featurization method, and downstream results. Every result links back to the model and feature matrix that produced it.
 
