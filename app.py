@@ -217,6 +217,35 @@ def drive_list_folder_files(service, folder_id: str, recursive: bool = False) ->
             if not page_token:
                 break
     return items
+    
+#=======================================================================================================================================================================#
+
+def drive_walk_folder(service, folder_id: str, prefix: str = "") -> List[Dict]:
+    """
+    Recursively walks a Drive folder, returning dicts with:
+      id, name, path (relative to the root folder you started from)
+    """
+    items = []
+    page_token = None
+    while True:
+        res = service.files().list(
+            q=f"'{folder_id}' in parents and trashed=false",
+            fields="nextPageToken, files(id,name,mimeType)",
+            pageSize=1000,
+            pageToken=page_token
+        ).execute()
+        for f in res.get("files", []):
+            mt = f.get("mimeType", "")
+            name = f.get("name", "")
+            rel_path = f"{prefix}/{name}" if prefix else name
+            if mt == "application/vnd.google-apps.folder":
+                items.extend(drive_walk_folder(service, f["id"], rel_path))
+            else:
+                items.append({"id": f["id"], "name": name, "path": rel_path})
+        page_token = res.get("nextPageToken")
+        if not page_token:
+            break
+    return items
 #=======================================================================================================================================================================#
 
 def drive_upload_bytes(service, folder_id: str, filename: str, data: bytes) -> str:
@@ -351,34 +380,41 @@ def ensure_unique_resource_slug(base_slug: str) -> str:
             n += 1
         return slug
 
+#=======================================================================================================================================================================#
 
 def _ext_ok_for_resource(filename: str) -> bool:
     ext = (filename.rsplit(".", 1)[-1].lower() if "." in filename else "")
     return ext in ALLOWED_RESOURCE_EXTENSIONS
 
+#=======================================================================================================================================================================#
 
 def drive_ensure_resource_folder(service, root_folder_id: str, slug: str) -> str:
     """Ensures <root>/resources/<slug> exists; returns its folder ID."""
     res_root = drive_find_or_create_folder(service, root_folder_id, "resources")
     return drive_find_or_create_folder(service, res_root, slug)
 
+#=======================================================================================================================================================================#
 
 def _upsert_resource_file(resource: str, filename: str, drive_id: str,
-                          preview_url: str, download_url: str) -> None:
+                          preview_url: str, download_url: str,
+                          path: str = None) -> None:
+    path = path or filename
     with sqlite3.connect(DB_NAME) as conn:
         conn.execute("""
             INSERT INTO resource_files
-                (resource, filename, uploaded_at, drive_id, preview_url, download_url)
-            VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, ?)
+                (resource, filename, path, uploaded_at, drive_id, preview_url, download_url)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?)
             ON CONFLICT(resource, filename)
             DO UPDATE SET
                 uploaded_at  = CURRENT_TIMESTAMP,
+                path         = excluded.path,
                 drive_id     = excluded.drive_id,
                 preview_url  = excluded.preview_url,
                 download_url = excluded.download_url
-        """, (resource, filename, drive_id, preview_url, download_url))
+        """, (resource, filename, path, drive_id, preview_url, download_url))
         conn.commit()
 
+#=======================================================================================================================================================================#
 
 def _drive_make_public(service, file_id: str) -> None:
     """Best-effort 'anyone with the link' permission."""
@@ -461,6 +497,29 @@ def file_to_table_name(filename: str) -> str:
 #         ).execute()
 #     except Exception:
 #         pass  # ignore if permission already exists
+#=======================================================================================================================================================================#
+
+def build_file_tree(files):
+    """
+    Converts a flat list of sqlite3.Row with 'path' into a nested dict:
+    {
+      "dirname": {
+        "__files__": [row, ...],
+        "subdir": { "__files__": [...], ... }
+      },
+      "__files__": [root-level rows]
+    }
+    """
+    tree = {"__files__": []}
+    for row in files:
+        path = row["path"] or row["filename"]
+        parts = path.replace("\\", "/").split("/")
+        node = tree
+        for part in parts[:-1]:   # directories
+            node = node.setdefault(part, {"__files__": []})
+        node["__files__"].append(row)
+    return tree
+    
 #=======================================================================================================================================================================#
 
 def ensure_uploads_log_columns():
@@ -920,6 +979,8 @@ def _list_user_tables():
              ORDER BY 1
         """)
         return [r[0] for r in cur.fetchall()]
+        
+#=======================================================================================================================================================================#
 
 def _strip_sql_comments(sql: str) -> str:
     # -- inline comments
@@ -928,9 +989,13 @@ def _strip_sql_comments(sql: str) -> str:
     sql = re.sub(r"/\*.*?\*/", "", sql, flags=re.DOTALL)
     return sql
 
+#=======================================================================================================================================================================#
+
 def _is_destructive(sql: str) -> bool:
     plain = _strip_sql_comments(sql)
     return bool(DESTRUCTIVE_REGEX.search(plain))
+
+#=======================================================================================================================================================================#
 
 @app.route("/admin/sql", methods=["GET", "POST"])
 @app.route("/query_sql", methods=["GET", "POST"])
@@ -1509,15 +1574,16 @@ def resource_detail(resource_name):
                 else:
                     service = get_drive_service()
                     imported = 0
-                    for f in drive_list_folder_files(service, folder_id, recursive=True):
+                    for f in drive_walk_folder(service, folder_id):
                         name = (f.get("name") or "").strip()
+                        path = (f.get("path") or name).strip()
                         if not _ext_ok_for_resource(name):
                             continue
                         fid = f["id"]
                         preview_url, download_url = _drive_urls(fid)
                         _drive_make_public(service, fid)
                         _upsert_resource_file(resource_name, name, fid,
-                                              preview_url, download_url)
+                                              preview_url, download_url, path=path)
                         imported += 1
                     upload_message = f"Linked folder: imported {imported} item(s)."
 
@@ -1567,16 +1633,18 @@ def resource_detail(resource_name):
         """, (resource_name,)).fetchall()
 
     return render_template(
-        'resource_detail.html',
-        resource_name=resource_name,
-        pretty_title=pretty_title,
-        pretty_desc=pretty_desc,
-        files=files,
-        upload_message=upload_message,
-        admin=is_admin,
-        allowed_exts=sorted(ALLOWED_RESOURCE_EXTENSIONS),
-    )
+    'resource_detail.html',
+    resource_name=resource_name,
+    pretty_title=pretty_title,
+    pretty_desc=pretty_desc,
+    files=files,
+    file_tree=build_file_tree(files),   # ← add only this line
+    upload_message=upload_message,
+    admin=is_admin,
+    allowed_exts=sorted(ALLOWED_RESOURCE_EXTENSIONS),
+)
 
+##############################################################################################################################################################
 
 @app.route('/resources/<resource_name>/delete/<path:filename>', methods=['POST'])
 def delete_resource_file(resource_name, filename):
@@ -1590,6 +1658,8 @@ def delete_resource_file(resource_name, filename):
     flash(f"Removed {safe_name} from the catalog.")
     return redirect(url_for('resource_detail', resource_name=resource_name))
 
+
+##############################################################################################################################################################
 
 @app.route('/resources/<resource_name>/delete_card', methods=['POST'])
 def delete_resource(resource_name):
@@ -1659,7 +1729,18 @@ def view_result_file(property_name, tab, filename):
     ext = filename.rsplit('.', 1)[-1].lower()
     return render_template("view_result.html", filename=filename, property_name=property_name, tab=tab, ext=ext)
 
+#==================================================================================================================================================================#
 
+@app.template_filter('count_files')
+def count_files_filter(node):
+    """Recursively count all files in a tree node."""
+    count = len(node.get('__files__', []))
+    for key, child in node.items():
+        if key != '__files__':
+            count += count_files_filter(child)
+    return count
+
+#=================================================================================================================================================================#
 def extract_drive_id(link):
     match = re.search(r'/d/([a-zA-Z0-9_-]+)', link)
     if match:
@@ -1668,10 +1749,8 @@ def extract_drive_id(link):
     if match:
         return match.group(1)
     raise ValueError("Invalid Drive link")
-##############################################################################################################################################################
-
-
-##############################################################################################################################################################
+    
+#=============================================================================================================================================================#
 
 @app.route('/view_table/<path:filename>', methods=['GET'])
 def view_table(filename):
