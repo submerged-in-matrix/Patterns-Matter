@@ -34,7 +34,13 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 ALLOWED_DATASET_EXTENSIONS = {"csv", "npy", "dat", "in", "inp", "jsonl", "txt", "mat", "si_parametric", "si_tension", "sw", "si_thermal_v3", "si_thermal_v4"}
 ALLOWED_RESULTS_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "pdf", "docx", "csv", "xlsx", "out", "dat", "json", "gz"}
-ALLOWED_MUSIC_EXTENSIONS   = {"gpx", "pdf"}
+ALLOWED_RESOURCE_EXTENSIONS = {
+    "gpx", "gp", "gp3", "gp4", "gp5", "gtp", "ptb", "tg",   
+    "pdf", "docx", "txt",                                    
+    "mid", "midi",                                           
+    "png", "jpg", "jpeg",                                    
+    "zip",                                                   
+}
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
@@ -77,8 +83,8 @@ def allowed_dataset_file(filename):
 def allowed_results_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_RESULTS_EXTENSIONS
 
-def allowed_music_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_MUSIC_EXTENSIONS
+def allowed_resource_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_RESOURCE_EXTENSIONS
 #********************************************************************************************************************************************************************************************************#
 
 # ================================================================= Helper Functions ((8 helpers for drive-api))================================================== #
@@ -265,7 +271,52 @@ def ensure_properties_schema():
             )
         conn.commit()
 #=======================================================================================================================================================================#
+def ensure_resources_schema():
+    """Catalog for guitar tablatures / instructional resources (idempotent)."""
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS resources (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                slug         TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                description  TEXT,
+                visible      INTEGER NOT NULL DEFAULT 1,
+                created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_slug ON resources(slug)")
 
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS resource_files (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                resource     TEXT NOT NULL,
+                filename     TEXT NOT NULL,
+                uploaded_at  TEXT,
+                drive_id     TEXT,
+                preview_url  TEXT,
+                download_url TEXT
+            )
+        """)
+        c.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_files_unique
+            ON resource_files(resource, filename)
+        """)
+
+        # Seed once so the page isn't empty on first deploy
+        if c.execute("SELECT COUNT(*) FROM resources").fetchone()[0] == 0:
+            c.executemany(
+                "INSERT INTO resources (slug, display_name, description) VALUES (?,?,?)",
+                [
+                    ("covers", "Covers & Tributes", "Transcribed tabs for covers and tributes"),
+                    ("instructional", "Instructional", "Exercises, technique and theory material"),
+                    ("originals", "Originals",
+                     "Not tabbed yet — under studio production; tablatures will follow"),
+                ],
+            )
+        conn.commit()
+
+#=======================================================================================================================================================================#
 def slugify_property(name: str) -> str:
     """'My New Pattern' -> 'my_new_pattern'"""
     s = (name or "").strip().lower()
@@ -289,6 +340,55 @@ def ensure_unique_slug(base_slug: str) -> str:
                 slug = f"{base_slug}_{int(m.group(1))+1}"
             else:
                 slug = f"{base_slug}_2"
+#=======================================================================================================================================================================#
+def ensure_unique_resource_slug(base_slug: str) -> str:
+    """If a resource slug exists, append _2, _3, ..."""
+    with sqlite3.connect(DB_NAME) as conn:
+        c = conn.cursor()
+        slug, n = base_slug, 2
+        while c.execute("SELECT 1 FROM resources WHERE slug=?", (slug,)).fetchone():
+            slug = f"{base_slug}_{n}"
+            n += 1
+        return slug
+
+
+def _ext_ok_for_resource(filename: str) -> bool:
+    ext = (filename.rsplit(".", 1)[-1].lower() if "." in filename else "")
+    return ext in ALLOWED_RESOURCE_EXTENSIONS
+
+
+def drive_ensure_resource_folder(service, root_folder_id: str, slug: str) -> str:
+    """Ensures <root>/resources/<slug> exists; returns its folder ID."""
+    res_root = drive_find_or_create_folder(service, root_folder_id, "resources")
+    return drive_find_or_create_folder(service, res_root, slug)
+
+
+def _upsert_resource_file(resource: str, filename: str, drive_id: str,
+                          preview_url: str, download_url: str) -> None:
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute("""
+            INSERT INTO resource_files
+                (resource, filename, uploaded_at, drive_id, preview_url, download_url)
+            VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, ?)
+            ON CONFLICT(resource, filename)
+            DO UPDATE SET
+                uploaded_at  = CURRENT_TIMESTAMP,
+                drive_id     = excluded.drive_id,
+                preview_url  = excluded.preview_url,
+                download_url = excluded.download_url
+        """, (resource, filename, drive_id, preview_url, download_url))
+        conn.commit()
+
+
+def _drive_make_public(service, file_id: str) -> None:
+    """Best-effort 'anyone with the link' permission."""
+    try:
+        service.permissions().create(
+            fileId=file_id, body={"role": "reader", "type": "anyone"}, fields="id"
+        ).execute()
+    except Exception:
+        pass
+
 #=======================================================================================================================================================================#
 
 _SQLITE_RESERVED_PREFIXES = ("sqlite_",)
@@ -466,81 +566,6 @@ def ensure_uploads_log_schema():
             app.logger.warning("ensure_uploads_log_schema: unique index creation skipped: %s", e)
 
         conn.commit()
-#=======================================================================================================================================================================#
-
-def ensure_clips_schema():
-    """Create a durable table for clips (idempotent)."""
-    with sqlite3.connect(DB_NAME) as conn:
-        c = conn.cursor()
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS clips (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                title        TEXT NOT NULL,
-                description  TEXT,
-                preview_url  TEXT NOT NULL,
-                download_url TEXT,
-                created_at   TEXT DEFAULT (CURRENT_TIMESTAMP)
-            )
-        """)
-        # prevents exact duplicates
-        c.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_clips_unique
-            ON clips(title, preview_url)
-        """)
-        conn.commit()
-#=======================================================================================================================================================================#
-
-def sync_clips_from_csv():
-    """
-    Read /data/drive_music.csv (or local fallback) and INSERT OR IGNORE
-    into 'clips'. Handles both headerless rows and a header line.
-    Row format used by your form: [title, description, preview_url, download_url].
-    """
-    import os, csv
-    paths = ["/data/drive_music.csv", "drive_music.csv"]
-    csv_path = next((p for p in paths if os.path.exists(p)), None)
-    if not csv_path:
-        return {"status": "skip", "reason": "csv_missing", "inserted": 0}
-
-    inserted = 0
-    with sqlite3.connect(DB_NAME) as conn, open(csv_path, newline='', encoding='utf-8') as f:
-        c = conn.cursor()
-        reader = csv.reader(f)
-        # detect header
-        first = next(reader, None)
-        had_header = False
-        if first:
-            lowered = [x.strip().lower() for x in first]
-            if {"title", "description", "preview_url", "download_url"} <= set(lowered):
-                had_header = True
-            else:
-                # treat first as data row
-                row = first
-                title = (row[0] if len(row) > 0 else "").strip()
-                desc  = (row[1] if len(row) > 1 else "").strip()
-                prev  = (row[2] if len(row) > 2 else "").strip()
-                down  = (row[3] if len(row) > 3 else "").strip()
-                if title and prev:
-                    c.execute("""INSERT OR IGNORE INTO clips(title,description,preview_url,download_url)
-                                 VALUES (?,?,?,?)""", (title, desc, prev, down))
-                    if c.rowcount > 0: inserted += 1
-
-        # rest of rows
-        for row in reader:
-            if not row: 
-                continue
-            title = (row[0] if len(row) > 0 else "").strip()
-            desc  = (row[1] if len(row) > 1 else "").strip()
-            prev  = (row[2] if len(row) > 2 else "").strip()
-            down  = (row[3] if len(row) > 3 else "").strip()
-            if not (title and prev):
-                continue
-            c.execute("""INSERT OR IGNORE INTO clips(title,description,preview_url,download_url)
-                         VALUES (?,?,?,?)""", (title, desc, prev, down))
-            if c.rowcount > 0: inserted += 1
-
-        conn.commit()
-    return {"status": "ok", "inserted": inserted}
 #=======================================================================================================================================================================#
 
 def dedupe_uploads_log():
@@ -751,10 +776,9 @@ def _run_startup_tasks():
             except Exception as e:
                 app.logger.warning("ensure_properties_schema at startup: %s", e)
             try:
-                ensure_clips_schema()
-                sync_clips_from_csv()  # best-effort; keeps DB in step with CSV
+                ensure_resources_schema()
             except Exception as e:
-                app.logger.warning("clips startup sync: %s", e)
+                app.logger.warning("ensure_resources_schema at startup: %s", e)
 
 
             # (Optional) If >> to clean up old local rows or dedupe:
@@ -840,6 +864,47 @@ def materials_portal():
 
     return render_template('materials_portal.html', props=props, admin=is_admin)
 ##############################################################################################################################################################
+
+@app.route('/resources', methods=['GET', 'POST'])
+def resources_portal():
+    ensure_resources_schema()
+    is_admin = bool(session.get('admin'))
+
+    # Admin adds a new resource card
+    if is_admin and request.method == 'POST' and request.form.get('add_resource') == '1':
+        display_name = (request.form.get('display_name') or '').strip()
+        description  = (request.form.get('description') or '').strip()
+        if not display_name:
+            flash("Please provide a resource name.")
+            return redirect(url_for('resources_portal'))
+
+        slug = ensure_unique_resource_slug(slugify_property(display_name))
+        with sqlite3.connect(DB_NAME) as conn:
+            conn.execute(
+                "INSERT INTO resources (slug, display_name, description, visible) VALUES (?,?,?,1)",
+                (slug, display_name, description)
+            )
+            conn.commit()
+
+        flash(f"Added new resource: {display_name}")
+        return redirect(url_for('resource_detail', resource_name=slug))
+
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.row_factory = sqlite3.Row
+        resources = conn.execute("""
+            SELECT r.slug,
+                   r.display_name,
+                   COALESCE(r.description,'') AS description,
+                   COALESCE((SELECT COUNT(*) FROM resource_files f
+                              WHERE f.resource = r.slug), 0) AS count
+              FROM resources r
+             WHERE COALESCE(r.visible,1) = 1
+          ORDER BY r.display_name
+        """).fetchall()
+
+    return render_template('resources_portal.html', resources=resources, admin=is_admin)
+
+#===============================================================================================================================================#
 
 # SQL Query Tool (admin only, CRUD, multi-statement)
 DESTRUCTIVE_REGEX = re.compile(r"\b(drop|delete|update|alter|truncate)\b", re.IGNORECASE)
@@ -1396,6 +1461,149 @@ def property_detail(property_name, tab):
     )    
 ##############################################################################################################################################################
 
+@app.route('/resources/<resource_name>', methods=['GET', 'POST'])
+def resource_detail(resource_name):
+    ensure_resources_schema()
+    is_admin = bool(session.get('admin'))
+    upload_message = ""
+
+    with sqlite3.connect(DB_NAME) as conn:
+        row = conn.execute(
+            "SELECT display_name, COALESCE(description,'') FROM resources WHERE slug=?",
+            (resource_name,)
+        ).fetchone()
+    if not row:
+        return "Not found.", 404
+    pretty_title, pretty_desc = row[0], row[1]
+
+    if is_admin and request.method == 'POST':
+        try:
+            # 1) Single Drive file by link/ID
+            if request.form.get('add_drive'):
+                drive_link = (request.form.get('drive_link') or '').strip()
+                label      = (request.form.get('label') or '').strip()
+
+                if not _ext_ok_for_resource(label):
+                    upload_message = ("Label must end with one of: "
+                                      f"{', '.join(sorted(ALLOWED_RESOURCE_EXTENSIONS))}.")
+                else:
+                    file_id = _drive_extract_id(drive_link)
+                    if not file_id:
+                        upload_message = "Invalid Google Drive link or ID."
+                    else:
+                        preview_url, download_url = _drive_urls(file_id)
+                        try:
+                            _drive_make_public(get_drive_service(), file_id)
+                        except Exception:
+                            pass
+                        _upsert_resource_file(resource_name, label, file_id,
+                                              preview_url, download_url)
+                        upload_message = f"Added '{label}'."
+
+            # 2) Link a Drive FOLDER (recursive)
+            elif request.form.get('link_folder'):
+                folder_link = (request.form.get('drive_folder_link') or '').strip()
+                folder_id = _drive_extract_id(folder_link)
+                if not folder_id:
+                    upload_message = "Invalid Drive folder link or ID."
+                else:
+                    service = get_drive_service()
+                    imported = 0
+                    for f in drive_list_folder_files(service, folder_id, recursive=True):
+                        name = (f.get("name") or "").strip()
+                        if not _ext_ok_for_resource(name):
+                            continue
+                        fid = f["id"]
+                        preview_url, download_url = _drive_urls(fid)
+                        _drive_make_public(service, fid)
+                        _upsert_resource_file(resource_name, name, fid,
+                                              preview_url, download_url)
+                        imported += 1
+                    upload_message = f"Linked folder: imported {imported} item(s)."
+
+            # 3) ZIP → push contents to Drive <root>/resources/<slug> → catalog
+            elif request.form.get('zip_upload'):
+                if 'zipfile' not in request.files or request.files['zipfile'].filename == '':
+                    upload_message = "No ZIP file selected."
+                else:
+                    root_id = (os.environ.get("GDRIVE_ROOT_FOLDER_ID") or "").strip()
+                    if not root_id:
+                        raise RuntimeError("GDRIVE_ROOT_FOLDER_ID not set.")
+                    service = get_drive_service()
+                    target_folder_id = drive_ensure_resource_folder(service, root_id, resource_name)
+                    if not target_folder_id or target_folder_id in ("root", "", None):
+                        raise RuntimeError("Refusing to upload: invalid Drive parent.")
+
+                    data = request.files['zipfile'].read()
+                    z = zipfile.ZipFile(io.BytesIO(data))
+                    uploaded = 0
+                    for info in z.infolist():
+                        if info.is_dir():
+                            continue
+                        base = os.path.basename(info.filename)
+                        if not base or not _ext_ok_for_resource(base):
+                            continue
+                        fid = drive_upload_bytes(service, target_folder_id, base, z.read(info))
+                        preview_url, download_url = _drive_urls(fid)
+                        _drive_make_public(service, fid)
+                        _upsert_resource_file(resource_name, base, fid,
+                                              preview_url, download_url)
+                        uploaded += 1
+                    upload_message = f"Uploaded {uploaded} file(s) from ZIP to Drive."
+
+        except Exception as e:
+            upload_message = f"Error: {e}"
+
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.row_factory = sqlite3.Row
+        files = conn.execute("""
+            SELECT filename,
+                   uploaded_at,
+                   COALESCE(preview_url,'')  AS preview_url,
+                   COALESCE(download_url,'') AS download_url
+              FROM resource_files
+             WHERE resource = ?
+          ORDER BY uploaded_at DESC, filename
+        """, (resource_name,)).fetchall()
+
+    return render_template(
+        'resource_detail.html',
+        resource_name=resource_name,
+        pretty_title=pretty_title,
+        pretty_desc=pretty_desc,
+        files=files,
+        upload_message=upload_message,
+        admin=is_admin,
+        allowed_exts=sorted(ALLOWED_RESOURCE_EXTENSIONS),
+    )
+
+
+@app.route('/resources/<resource_name>/delete/<path:filename>', methods=['POST'])
+def delete_resource_file(resource_name, filename):
+    if not session.get('admin'):
+        return redirect(url_for('login'))
+    safe_name = os.path.basename(filename)
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute("DELETE FROM resource_files WHERE resource=? AND filename=?",
+                     (resource_name, safe_name))
+        conn.commit()
+    flash(f"Removed {safe_name} from the catalog.")
+    return redirect(url_for('resource_detail', resource_name=resource_name))
+
+
+@app.route('/resources/<resource_name>/delete_card', methods=['POST'])
+def delete_resource(resource_name):
+    if not session.get('admin'):
+        return redirect(url_for('login'))
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute("DELETE FROM resource_files WHERE resource=?", (resource_name,))
+        conn.execute("DELETE FROM resources WHERE slug=?", (resource_name,))
+        conn.commit()
+    flash("Resource deleted.")
+    return redirect(url_for('resources_portal'))
+
+#=======================================================================================================================================================#
+
 # NEW: JSON endpoint to save one row without full-page reload
 @app.route('/materials/<property_name>/<tab>/edit', methods=['POST'])
 def materials_edit_row(property_name, tab):
@@ -1462,38 +1670,7 @@ def extract_drive_id(link):
     raise ValueError("Invalid Drive link")
 ##############################################################################################################################################################
 
-@app.route('/clips')
-def public_clips():
-    import os
 
-    admin = session.get('admin', False)
-    clips = []
-
-    # -- 1. Try to load from CSV (Drive-backed music list)
-    csv_path = '/data/drive_music.csv'
-    #csv_path = '/data/drive_music.csv' if os.path.exists('/data/drive_music.csv') else 'drive_music.csv'
-
-    try:
-        with open(csv_path, encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            required_headers = {'title', 'description', 'preview_url', 'download_url'}
-            if reader.fieldnames and required_headers.issubset(set(reader.fieldnames)):
-                for row in reader:
-                    title = row.get('title', '').strip()
-                    description = row.get('description', '').strip()
-                    preview = row.get('preview_url', '').strip()
-                    download = row.get('download_url', '').strip()
-                    if preview and download:
-                        clips.append((preview, download, title, description))
-            else:
-                print("⚠️ CSV is missing required headers:", reader.fieldnames)
-    except Exception as e:
-        print("🚫 Error reading CSV:", e)
-
-
-    pass
-
-    return render_template('clips.html', clips=clips, admin=admin)
 ##############################################################################################################################################################
 
 @app.route('/view_table/<path:filename>', methods=['GET'])
@@ -1640,94 +1817,11 @@ def delete_dataset_file(property_name, tab, filename):
     return redirect(url_for('property_detail', property_name=property_name, tab=tab))
 ##############################################################################################################################################################
 
-def _clips_csv_path() -> str:
-    p = "/data/drive_music.csv"
-    return p if os.path.exists(p) else "drive_music.csv"
-
 def _table_exists(conn, name: str) -> bool:
     cur = conn.cursor()
     cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,))
     return cur.fetchone() is not None
 
-@app.route("/delete_clip", methods=["POST"])
-def delete_clip():
-    if not session.get("admin"):
-        return redirect(url_for("login"))
-
-    title    = (request.form.get("title") or "").strip()
-    preview  = (request.form.get("preview") or "").strip()
-    download = (request.form.get("download") or "").strip()
-
-    if not title or not preview:
-        flash("Missing clip identifiers.")
-        return redirect(url_for("public_clips"))
-
-    # --- CSV delete (preserve header if present)
-    import csv, tempfile, shutil
-    csv_path = _clips_csv_path()
-    removed_csv = False
-    if os.path.exists(csv_path):
-        with open(csv_path, "r", encoding="utf-8", newline="") as f:
-            rows = list(csv.reader(f))
-        header = rows[0] if rows else []
-        has_header = header and any(h.lower() == "title" for h in header)
-        start = 1 if has_header else 0
-
-        kept = rows[:start]
-        for r in rows[start:]:
-            # support both old (no header) [title, desc, preview, download]
-            # and headered CSV with same column order
-            t = (r[0] if len(r) > 0 else "").strip()
-            p = (r[2] if len(r) > 2 else "").strip()
-            d = (r[3] if len(r) > 3 else "").strip()
-            if not removed_csv and t == title and p == preview and (not download or d == download):
-                removed_csv = True
-                continue
-            kept.append(r)
-
-        with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", newline="") as tmp:
-            csv.writer(tmp).writerows(kept)
-            tmp_name = tmp.name
-        shutil.move(tmp_name, csv_path)
-
-    # --- DB delete (handle either 'clips' table or legacy 'music_clips')
-    removed_db = False
-    try:
-        with sqlite3.connect(DB_NAME) as conn:
-            if _table_exists(conn, "clips"):
-                # expected schema: clips(title, description, preview_url, download_url)
-                cur = conn.cursor()
-                if download:
-                    cur.execute(
-                        "DELETE FROM clips WHERE title=? AND preview_url=? AND download_url=?",
-                        (title, preview, download),
-                    )
-                else:
-                    cur.execute(
-                        "DELETE FROM clips WHERE title=? AND preview_url=?",
-                        (title, preview),
-                    )
-                removed_db = cur.rowcount > 0
-                conn.commit()
-            elif _table_exists(conn, "music_clips"):
-                # legacy schema: music_clips(filename=preview||'||'||download, title, description)
-                fn = f"{preview}||{download}" if download else f"{preview}||"
-                cur = conn.cursor()
-                cur.execute(
-                    "DELETE FROM music_clips WHERE title=? AND filename=?",
-                    (title, fn),
-                )
-                removed_db = cur.rowcount > 0
-                conn.commit()
-    except Exception as e:
-        app.logger.warning("delete_clip DB error: %s", e)
-
-    if removed_csv or removed_db:
-        flash("Clip deleted from catalog.")
-    else:
-        flash("Clip not found (nothing removed).")
-
-    return redirect(url_for("public_clips"))
 ##############################################################################################################################################################
 
 # SEARCH ROUTE
@@ -1735,7 +1829,8 @@ def delete_clip():
 def search():
     query = request.args.get('q', '').strip().lower()
     materials = []
-    clips = []
+    resources = []
+
     if query:
         # Search materials database datasets/results
         with sqlite3.connect(DB_NAME) as conn:
@@ -1747,27 +1842,33 @@ def search():
                 ORDER BY uploaded_at DESC
             """, (f'%{query}%', f'%{query}%', f'%{query}%', f'%{query}%'))
             materials = c.fetchall()
-        # Search music clips
+        # Search music resources
         try:
             with sqlite3.connect(DB_NAME) as conn:
                 c = conn.cursor()
                 c.execute("""
-                    SELECT id, filename, title, description
-                    FROM music_clips
-                    WHERE lower(title) LIKE ? OR lower(description) LIKE ? OR lower(filename) LIKE ?
-                    ORDER BY id DESC
+                    SELECT f.resource,
+                           COALESCE(r.display_name, ''),
+                           f.filename,
+                           COALESCE(f.preview_url, ''),
+                           COALESCE(f.download_url, '')
+                      FROM resource_files f
+                 LEFT JOIN resources r ON r.slug = f.resource
+                     WHERE lower(f.filename) LIKE ?
+                        OR lower(f.resource) LIKE ?
+                        OR lower(COALESCE(r.display_name,'')) LIKE ?
+                  ORDER BY f.uploaded_at DESC
                 """, (f'%{query}%', f'%{query}%', f'%{query}%'))
-                clips = [
-                    (id, filename.replace('\\', '/'), title, description)
-                    for (id, filename, title, description) in c.fetchall()
-                ]
+                resources = c.fetchall()
         except Exception:
-            clips = []
-    return render_template('search_results.html', query=query, materials=materials, clips=clips)
+            resources = []
+    return render_template('search_results.html', query=query,
+                           materials=materials, resources=resources)
 ##############################################################################################################################################################
 
 @app.route("/keys")
 def available_keys():
+    ensure_resources_schema()
     # --- Materials properties (always list all visible ones) ---
     with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
@@ -1788,77 +1889,25 @@ def available_keys():
         """)
         props = cur.fetchall()
 
-    # --- Clip titles: prefer DB table; fall back to CSV (/data/drive_music.csv) ---
-    clip_titles = []
-    try:
-        with sqlite3.connect(DB_NAME) as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT title FROM music_clips WHERE title <> '' ORDER BY id DESC")
-            clip_titles = [r[0] for r in cur.fetchall()]
-    except Exception:
-        pass
+   # --- Guitar resources ---
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT r.slug,
+                   r.display_name AS title,
+                   COALESCE((SELECT COUNT(*) FROM resource_files f
+                              WHERE f.resource = r.slug), 0) AS count
+              FROM resources r
+             WHERE COALESCE(r.visible, 1) = 1
+          ORDER BY r.display_name
+        """)
+        resources = cur.fetchall()
 
-    if not clip_titles:
-        try:
-            with open("/data/drive_music.csv", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                need = {"title", "description", "preview_url", "download_url"}
-                if reader.fieldnames and need.issubset(set(reader.fieldnames)):
-                    for row in reader:
-                        t = (row.get("title") or "").strip()
-                        if t:
-                            clip_titles.append(t)
-        except Exception:
-            pass
-
-    return render_template("available_keys.html", props=props, clip_titles=clip_titles)
+    return render_template("available_keys.html", props=props, resources=resources)
 ##############################################################################################################################################################
 
-@app.route('/add_drive_clip', methods=['GET', 'POST'])
-def add_drive_clip():
-    if not session.get('admin'):
-        return redirect(url_for('login'))
 
-    message = ""
-    if request.method == 'POST':
-        link = request.form.get('link', '').strip()
-        title = request.form.get('title', '').strip()
-        description = request.form.get('description', '').strip()
-
-        def extract_drive_id(link):
-            match = re.search(r'/d/([a-zA-Z0-9_-]+)', link) or re.search(r'id=([a-zA-Z0-9_-]+)', link)
-            if match:
-                return match.group(1)
-            if re.match(r'^[a-zA-Z0-9_-]{10,}$', link):
-                return link
-            return None
-
-        file_id = extract_drive_id(link)
-        if file_id and title:
-            preview_url = f"https://drive.google.com/file/d/{file_id}/preview"
-            download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-            try:
-                # 1) append to CSV (legacy)
-                with open('/data/drive_music.csv', 'a', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f)
-                    writer.writerow([title, description, preview_url, download_url])
-
-                # 2) mirror into DB (new)
-                ensure_clips_schema()
-                with sqlite3.connect(DB_NAME) as conn:
-                    conn.execute("""
-                        INSERT OR IGNORE INTO clips(title, description, preview_url, download_url)
-                        VALUES (?, ?, ?, ?)
-                    """, (title, description, preview_url, download_url))
-                    conn.commit()
-
-                message = "✅ Clip added successfully!"
-            except Exception as e:
-                message = f"❌ Error saving clip: {e}"
-        else:
-            message = "❌ Invalid link or missing title."
-
-    return render_template('add_drive_clip.html', message=message)
 ##############################################################################################################################################################
 
             # ========== MAIN ==========
