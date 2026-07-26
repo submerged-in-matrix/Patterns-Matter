@@ -32,7 +32,7 @@ DB_NAME = os.path.join(DATA_DIR, "patterns-matter.db")
 UPLOAD_FOLDER = os.path.join(DATA_DIR, "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-ALLOWED_DATASET_EXTENSIONS = {"csv", "npy", "dat", "in", "inp", "jsonl", ""}
+ALLOWED_DATASET_EXTENSIONS = {"csv", "npy", "dat", "in", "inp", "jsonl", "txt", "mat", "si_parametric", "si_tension", "sw", "si_thermal_v3", "si_thermal_v4"}
 ALLOWED_RESULTS_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "pdf", "docx", "csv", "xlsx", "out", "dat", "json", "gz"}
 ALLOWED_MUSIC_EXTENSIONS   = {"gpx", "pdf"}
 
