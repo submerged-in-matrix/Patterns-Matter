@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Search Results - Patterns Matter{% endblock %}
+{% set page_title = "Search Results" %}
+{% set page_description = "Search results for '" ~ (query or '') ~ "' on Patterns Matter." %}
+{% block content %}
+<div class="container">
+  <!-- Admin Login/Logout (consistent header) -->
+  <div class="admin-link" style="text-align:right; margin-bottom:1em;">
+    {% if session.admin %}
+      <a href="{{ url_for('logout') }}">Logout</a>
+    {% else %}
+      <a href="{{ url_for('login') }}">Admin Login</a>
+    {% endif %}
+  </div>
+
+  <h1>Search Results for "{{ query }}"</h1>
+
+  <h2>Materials Datasets &amp; Results</h2>
+  {% if materials and materials|length %}
+    <ul>
+      {% for property, tab, filename, description in materials %}
+        <li>
+          <a href="{{ url_for('property_detail', property_name=property, tab=tab) }}">
+            {{ property.replace('_',' ').title() }} / {{ tab.title() }}
+          </a>
+          &mdash; <b>{{ filename }}</b>
+          {% if description %}<br><small>{{ description }}</small>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>No materials data found.</p>
+  {% endif %}
+
+  <h2>Guitar Resources</h2>
+  {% if resources and resources|length %}
+    <ul>
+      {% for slug, display_name, filename, preview_url, download_url in resources %}
+        <li>
+          <a href="{{ url_for('resource_detail', resource_name=slug) }}">
+            {{ display_name or slug.replace('_',' ').title() }}
+          </a>
+          &mdash; <b>{{ filename }}</b>
+          {% if preview_url %}<br><small><a href="{{ preview_url }}" target="_blank">View</a>
+            {% if download_url %} | <a href="{{ download_url }}" target="_blank">Download</a>{% endif %}
+          </small>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>No resources found.</p>
+  {% endif %}
+
+  <div style="margin-top:2em;">
+    <a href="{{ url_for('public_home') }}">Return to Home</a>
+  </div>
+</div>
+{% endblock %}
