@@ -1625,11 +1625,12 @@ def resource_detail(resource_name):
         files = conn.execute("""
             SELECT filename,
                    uploaded_at,
+                   COALESCE(path, filename) AS path,
                    COALESCE(preview_url,'')  AS preview_url,
                    COALESCE(download_url,'') AS download_url
               FROM resource_files
              WHERE resource = ?
-          ORDER BY uploaded_at DESC, filename
+          ORDER BY path, filename
         """, (resource_name,)).fetchall()
 
     return render_template(
