@@ -37,6 +37,7 @@ Each entry has **Dataset** and **Results** views tracking its pipeline. Entries 
 | **Dirac Cone Stability of Graphene** | DFT | Electronic-structure study of the graphene Dirac cone |
 | **Electronic Structure of Si** | DFT | First-principles electronic-structure calculation |
 | **Mechanical Response of Si Nanowire** | MD | Molecular-dynamics study of nanowire mechanical response |
+| **EMA-GNN** | ML | A Gnome inspired GNN to predict stability of materials |
 | **Thermal Conductivity of bulk-Si** | MD | Molecular-dynamics thermal-conductivity study |
 | **Masterarbeit** | — | Master's thesis materials |
 
