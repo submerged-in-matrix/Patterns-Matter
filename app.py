@@ -32,7 +32,7 @@ DB_NAME = os.path.join(DATA_DIR, "patterns-matter.db")
 UPLOAD_FOLDER = os.path.join(DATA_DIR, "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-ALLOWED_DATASET_EXTENSIONS = {"csv", "npy", "dat", "in", "inp", "jsonl", "txt", "mat", "si_parametric", "si_tension", "sw", "si_thermal_v3", "si_thermal_v4"}
+ALLOWED_DATASET_EXTENSIONS = {"csv", "npy", "dat", "in", "inp", "jsonl", "txt", "mat", "si_parametric", "si_tension", "sw", "si_thermal_v3", "si_thermal_v4", "zip", "7z", "json", "csv.gz"}
 ALLOWED_RESULTS_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "pdf", "docx", "csv", "xlsx", "out", "dat", "json", "gz"}
 ALLOWED_RESOURCE_EXTENSIONS = {
     "gpx", "gp", "gp3", "gp4", "gp5", "gtp", "ptb", "tg",   
@@ -875,7 +875,22 @@ def enforce_admin_idle_timeout():
         else:
             session['last_seen'] = now
 
-        
+##################################### ----#################################################################################################################################
+
+def _extract_table_name(sql: str) -> str:
+    """Best-effort table name extraction from INSERT/UPDATE/DELETE/ALTER."""
+    sql = _strip_sql_comments(sql).strip()
+    for pattern in [
+        r"\bINSERT\s+(?:OR\s+\w+\s+)?INTO\s+[\"']?(\w+)",
+        r"\bUPDATE\s+[\"']?(\w+)",
+        r"\bDELETE\s+FROM\s+[\"']?(\w+)",
+        r"\bALTER\s+TABLE\s+[\"']?(\w+)",
+    ]:
+        m = re.search(pattern, sql, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return ""
+##########################################################################################################################################################################
 ###################################################################################========== ROUTES ==========############################################################
 ###########################################################################################################################################################################
 
@@ -1019,7 +1034,6 @@ def query_sql():
             error_msg = "Queries that reference internal tables (sqlite_*) are blocked."
         else:
             try:
-                # If destructive, require explicit confirmation
                 if _is_destructive(sql) and not user_confirmed:
                     needs_confirm = True
                     error_msg = (
@@ -1030,6 +1044,7 @@ def query_sql():
                     statements = [s.strip() for s in sql.split(";") if s.strip()]
                     total_changed = 0
                     last_select_html = None
+                    affected_tables = set()
 
                     with sqlite3.connect(DB_NAME) as conn:
                         conn.execute("PRAGMA foreign_keys=ON;")
@@ -1045,21 +1060,54 @@ def query_sql():
                             else:
                                 cur.execute(stmt)
                                 total_changed = conn.total_changes
+                                # Extract table name for follow-up preview
+                                tbl = _extract_table_name(stmt)
+                                if tbl:
+                                    affected_tables.add(tbl)
 
                         conn.commit()
 
-                    result_html = (
-                        last_select_html
-                        if last_select_html is not None
-                        else f"<p><b>OK.</b> Executed {len(statements)} statement(s). "
-                             f"Total changed rows: {total_changed}.</p>"
-                    )
+                        # For non-SELECT statements, show affected table contents
+                        if last_select_html is None and affected_tables:
+                            parts = [
+                                f"<p><b>OK.</b> Executed {len(statements)} statement(s). "
+                                f"Total changed rows: {total_changed}.</p>"
+                            ]
+                            for tbl in sorted(affected_tables):
+                                try:
+                                    cur.execute(
+                                        f"SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                                        (tbl,)
+                                    )
+                                    if cur.fetchone():
+                                        df = pd.read_sql_query(
+                                            f'SELECT * FROM "{tbl}" LIMIT 50', conn
+                                        )
+                                        row_count = cur.execute(
+                                            f'SELECT COUNT(*) FROM "{tbl}"'
+                                        ).fetchone()[0]
+                                        parts.append(
+                                            f"<h4>{tbl} ({row_count} row{'s' if row_count != 1 else ''}):</h4>"
+                                        )
+                                        parts.append(df.to_html(classes="data", index=False))
+                                        if row_count > 50:
+                                            parts.append(f"<p><i>Showing first 50 of {row_count} rows.</i></p>")
+                                except Exception:
+                                    pass  # table may have been dropped
+                            result_html = "\n".join(parts)
+                        elif last_select_html is not None:
+                            result_html = last_select_html
+                        else:
+                            result_html = (
+                                f"<p><b>OK.</b> Executed {len(statements)} statement(s). "
+                                f"Total changed rows: {total_changed}.</p>"
+                            )
 
             except Exception as e:
                 error_msg = str(e)
 
     return render_template(
-        "sql_query.html",   # <-- matches your existing template filename
+        "sql_query.html",
         tables=tables,
         sql=sql,
         result_html=result_html,
