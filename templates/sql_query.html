@@ -1,9 +1,7 @@
 {% extends "base.html" %}
-
 {% block title %}SQL Query Tool | Patterns Matter{% endblock %}
 {% set page_title = "SQL Query Tool" %}
 {% set page_description = "Run read/write SQL against the Patterns Matter SQLite database (admin only)." %}
-
 {% block content %}
 <div class="container">
   <!-- Top row: Return Home (left) and Login/Logout (right) -->
@@ -17,13 +15,11 @@
       {% endif %}
     </div>
   </div>
-
   <h1>SQL Query Tool</h1>
   <div>
     <a href="{{ url_for('admin_home') }}">Back to Dashboard</a>
   </div>
   <hr>
-
   <style>
     .return-home {
       display:inline-block; background:#2a6; color:#fff; border-radius:6px;
@@ -34,19 +30,22 @@
     .warn-box label { cursor:pointer; }
     textarea { width:90%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     code { background: #00000022; padding: 0 .25em; border-radius: 4px; }
+    .table-link {
+      cursor:pointer; color:#6af; text-decoration:none; font-weight:bold;
+    }
+    .table-link:hover { text-decoration:underline; color:#fff; }
   </style>
-
-  <h2>Available Tables:</h2>
+  <h2>Available Tables <small style="font-size:.7em;color:#bcd;">(click to preview)</small>:</h2>
   <ul>
     {% for t in tables %}
-      <li><code>{{ t }}</code></li>
+      <li>
+        <code class="table-link" onclick="previewTable('{{ t }}')">{{ t }}</code>
+      </li>
     {% endfor %}
   </ul>
-
   <form method="post" id="sql-form">
-    <label for="sql">Enter SQL (supports multiple statements separated by “;”):</label><br>
+    <label for="sql">Enter SQL (supports multiple statements separated by ";"):</label><br>
     <textarea id="sql" name="sql" rows="10" required>{{ sql }}</textarea>
-
     <!-- Destructive confirmation (server-driven + client hint) -->
     <div id="confirm-wrap" class="warn-box" style="display: {{ 'block' if needs_confirm else 'none' }};">
       <input type="checkbox" id="confirm" name="confirm">
@@ -55,12 +54,10 @@
         <code>DROP</code>/<code>DELETE</code>/<code>UPDATE</code>/<code>ALTER</code>/<code>TRUNCATE</code>.
       </label>
     </div>
-
     <div style="margin-top:.8em;">
       <button type="submit">Run</button>
     </div>
   </form>
-
   {% if result_html %}
     <h2>Result:</h2>
     {{ result_html|safe }}
@@ -70,15 +67,20 @@
     <pre style="white-space: pre-wrap;">{{ error_msg }}</pre>
   {% endif %}
 </div>
-
 <script>
+// Click a table name → fill textarea and auto-submit
+function previewTable(name) {
+  var ta = document.getElementById('sql');
+  ta.value = 'SELECT * FROM "' + name + '" LIMIT 50;';
+  document.getElementById('sql-form').submit();
+}
+
 // Client-side helper: show confirm box if destructive terms detected.
 (function(){
   var ta = document.getElementById('sql');
   var wrap = document.getElementById('confirm-wrap');
   var serverNeedsConfirm = {{ 'true' if needs_confirm else 'false' }};
   var re = /\b(drop|delete|update|alter|truncate)\b/i;
-
   function update() {
     try {
       var s = ta.value.replace(/--.*?$/mg, "").replace(/\/\*[\s\S]*?\*\//g, "");
